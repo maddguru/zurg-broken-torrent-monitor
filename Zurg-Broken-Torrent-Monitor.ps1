@@ -1,5 +1,5 @@
-﻿# ============================================================================
-# Zurg Broken Torrent Monitor & Repair Tool v2.0
+# ============================================================================
+# Zurg Broken Torrent Monitor & Repair Tool v2.1
 # ============================================================================
 
 [CmdletBinding()]
@@ -30,17 +30,22 @@ $ErrorActionPreference = "Continue"
 $Script:Stats = @{
     TotalChecks = 0
     BrokenFound = 0
+    UnderRepairFound = 0
     RepairsTriggered = 0
     LastCheck = $null
     LastBrokenFound = $null
     CurrentCheck = @{
         BrokenFound = 0
+        UnderRepairFound = 0
         RepairsTriggered = 0
         BrokenHashes = @()
         BrokenNames = @()
+        UnderRepairHashes = @()
+        UnderRepairNames = @()
     }
     PreviousCheck = @{
         BrokenHashes = @()
+        UnderRepairHashes = @()
         TriggeredHashes = @()
     }
 }
@@ -111,22 +116,29 @@ function Test-ZurgConnection {
     }
 }
 
-function Get-ZurgBrokenTorrents {
+function Get-ZurgTorrentsByState {
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateSet("status_broken", "status_under_repair")]
+        [string]$State
+    )
+    
     try {
-        Write-Log "Fetching broken torrents from Zurg (using state filter)..." "DEBUG"
+        $stateName = if ($State -eq "status_broken") { "broken" } else { "under repair" }
+        Write-Log "Fetching $stateName torrents from Zurg..." "DEBUG"
         $headers = Get-AuthHeaders
         
-        $url = "$ZurgUrl/manage/?state=status_broken"
+        $url = "$ZurgUrl/manage/?state=$State"
         Write-Log "Fetching: $url" "DEBUG"
         
         try {
             $response = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 30 -ErrorAction Stop -UseBasicParsing
             $content = $response.Content
             
-            Write-Log "Successfully fetched broken torrents page (length: $($content.Length) bytes)" "DEBUG"
+            Write-Log "Successfully fetched $stateName torrents page (length: $($content.Length) bytes)" "DEBUG"
         }
         catch {
-            Write-Log "Failed to fetch broken torrents page: $($_.Exception.Message)" "ERROR"
+            Write-Log "Failed to fetch $stateName torrents page: $($_.Exception.Message)" "ERROR"
             return $null
         }
         
@@ -137,7 +149,7 @@ function Get-ZurgBrokenTorrents {
         $rowPattern = '<tr[^>]*data-hash="([a-fA-F0-9]{40})"[^>]*>'
         $rowMatches = [regex]::Matches($content, $rowPattern)
         
-        Write-Log "Found $($rowMatches.Count) torrent row(s) in broken torrents page" "DEBUG"
+        Write-Log "Found $($rowMatches.Count) torrent row(s) in $stateName torrents page" "DEBUG"
         
         if ($rowMatches.Count -eq 0) {
             # Fallback: Look for manage links
@@ -175,12 +187,12 @@ function Get-ZurgBrokenTorrents {
                     }
                 }
                 
-                Write-Log "  Found broken torrent: $torrentName" "DEBUG"
+                Write-Log "  Found $stateName torrent: $torrentName" "DEBUG"
                 
                 $torrents += @{
                     Hash = $hash
                     Name = $torrentName
-                    State = "broken_torrent"
+                    State = $State
                 }
             }
         }
@@ -227,21 +239,21 @@ function Get-ZurgBrokenTorrents {
                     }
                 }
                 
-                Write-Log "  Found broken torrent: $torrentName" "DEBUG"
+                Write-Log "  Found $stateName torrent: $torrentName" "DEBUG"
                 
                 $torrents += @{
                     Hash = $hash
                     Name = $torrentName
-                    State = "broken_torrent"
+                    State = $State
                 }
             }
         }
         
-        Write-Log "Successfully parsed $($torrents.Count) broken torrent(s)" "DEBUG"
+        Write-Log "Successfully parsed $($torrents.Count) $stateName torrent(s)" "DEBUG"
         return $torrents
     }
     catch {
-        Write-Log "Error getting broken torrents: $($_.Exception.Message)" "ERROR"
+        Write-Log "Error getting $stateName torrents: $($_.Exception.Message)" "ERROR"
         Write-Log "Stack trace: $($_.ScriptStackTrace)" "DEBUG"
         return $null
     }
@@ -283,19 +295,26 @@ function Invoke-TorrentRepair {
 
 function Start-BrokenTorrentCheck {
     Write-Log "" "INFO"
-    Write-Log "Starting broken torrent check..." "INFO"
+    Write-Log "Starting torrent status check..." "INFO"
     
     $Script:Stats.CurrentCheck = @{
         BrokenFound = 0
+        UnderRepairFound = 0
         RepairsTriggered = 0
         BrokenHashes = @()
         BrokenNames = @()
+        UnderRepairHashes = @()
+        UnderRepairNames = @()
     }
     
-    $brokenTorrents = Get-ZurgBrokenTorrents
+    # Get broken torrents
+    $brokenTorrents = Get-ZurgTorrentsByState -State "status_broken"
     
-    if ($null -eq $brokenTorrents) {
-        Write-Log "Failed to retrieve broken torrents" "ERROR"
+    # Get under repair torrents
+    $underRepairTorrents = Get-ZurgTorrentsByState -State "status_under_repair"
+    
+    if ($null -eq $brokenTorrents -and $null -eq $underRepairTorrents) {
+        Write-Log "Failed to retrieve torrent status" "ERROR"
         $Script:Stats.TotalChecks++
         $Script:Stats.LastCheck = Get-Date
         return
@@ -304,46 +323,100 @@ function Start-BrokenTorrentCheck {
     $Script:Stats.TotalChecks++
     $Script:Stats.LastCheck = Get-Date
     
-    Write-Log "Found $($brokenTorrents.Count) broken torrent(s) (matching Zurg web interface)" "INFO"
-    
-    if ($brokenTorrents.Count -eq 0) {
-        Write-Log "No broken torrents found - all good!" "SUCCESS"
-        Write-Log "Broken torrent check completed" "INFO"
-        Show-CheckSummary
-        return
+    # Process broken torrents
+    if ($null -ne $brokenTorrents) {
+        $Script:Stats.CurrentCheck.BrokenFound = $brokenTorrents.Count
+        $Script:Stats.BrokenFound += $brokenTorrents.Count
+        
+        if ($brokenTorrents.Count -gt 0) {
+            $Script:Stats.LastBrokenFound = Get-Date
+        }
     }
     
-    $Script:Stats.CurrentCheck.BrokenFound = $brokenTorrents.Count
-    $Script:Stats.BrokenFound += $brokenTorrents.Count
-    $Script:Stats.LastBrokenFound = Get-Date
+    # Process under repair torrents
+    if ($null -ne $underRepairTorrents) {
+        $Script:Stats.CurrentCheck.UnderRepairFound = $underRepairTorrents.Count
+        $Script:Stats.UnderRepairFound += $underRepairTorrents.Count
+    }
     
-    foreach ($torrent in $brokenTorrents) {
-        Write-Log "  Found broken torrent: $($torrent.Name)" "WARN"
-        $Script:Stats.CurrentCheck.BrokenHashes += $torrent.Hash
-        $Script:Stats.CurrentCheck.BrokenNames += $torrent.Name
+    Write-Log "Found $($Script:Stats.CurrentCheck.BrokenFound) broken torrent(s)" "INFO"
+    Write-Log "Found $($Script:Stats.CurrentCheck.UnderRepairFound) under repair torrent(s)" "INFO"
+    
+    # Display broken torrents
+    if ($null -ne $brokenTorrents -and $brokenTorrents.Count -gt 0) {
+        Write-Log "" "INFO"
+        Write-Log "BROKEN TORRENTS:" "WARN"
+        foreach ($torrent in $brokenTorrents) {
+            Write-Log "  - $($torrent.Name)" "WARN"
+            $Script:Stats.CurrentCheck.BrokenHashes += $torrent.Hash
+            $Script:Stats.CurrentCheck.BrokenNames += $torrent.Name
+        }
+    }
+    
+    # Display under repair torrents
+    if ($null -ne $underRepairTorrents -and $underRepairTorrents.Count -gt 0) {
+        Write-Log "" "INFO"
+        Write-Log "UNDER REPAIR:" "INFO"
+        foreach ($torrent in $underRepairTorrents) {
+            Write-Log "  - $($torrent.Name)" "INFO"
+            $Script:Stats.CurrentCheck.UnderRepairHashes += $torrent.Hash
+            $Script:Stats.CurrentCheck.UnderRepairNames += $torrent.Name
+        }
+    }
+    
+    # Check if there's anything to repair
+    if (($null -eq $brokenTorrents -or $brokenTorrents.Count -eq 0) -and 
+        ($null -eq $underRepairTorrents -or $underRepairTorrents.Count -eq 0)) {
+        Write-Log "" "SUCCESS"
+        Write-Log "No broken or under repair torrents found - all good!" "SUCCESS"
+        Write-Log "Torrent status check completed" "INFO"
+        Show-CheckSummary
+        return
     }
     
     Write-Log "" "INFO"
     Write-Log "Triggering repairs..." "INFO"
     
-    foreach ($torrent in $brokenTorrents) {
-        $success = Invoke-TorrentRepair -Hash $torrent.Hash -Name $torrent.Name
-        
-        if ($success) {
-            $Script:Stats.CurrentCheck.RepairsTriggered++
-            $Script:Stats.RepairsTriggered++
+    # Trigger repair for broken torrents
+    if ($null -ne $brokenTorrents -and $brokenTorrents.Count -gt 0) {
+        foreach ($torrent in $brokenTorrents) {
+            $success = Invoke-TorrentRepair -Hash $torrent.Hash -Name $torrent.Name
+            
+            if ($success) {
+                $Script:Stats.CurrentCheck.RepairsTriggered++
+                $Script:Stats.RepairsTriggered++
+            }
+            
+            Start-Sleep -Milliseconds 500
         }
-        
-        Start-Sleep -Milliseconds 500
+    }
+    
+    # Trigger repair for under repair torrents (re-trigger to help them along)
+    if ($null -ne $underRepairTorrents -and $underRepairTorrents.Count -gt 0) {
+        Write-Log "" "INFO"
+        Write-Log "Re-triggering repairs for under repair torrents..." "INFO"
+        foreach ($torrent in $underRepairTorrents) {
+            $success = Invoke-TorrentRepair -Hash $torrent.Hash -Name $torrent.Name
+            
+            if ($success) {
+                $Script:Stats.CurrentCheck.RepairsTriggered++
+                $Script:Stats.RepairsTriggered++
+            }
+            
+            Start-Sleep -Milliseconds 500
+        }
     }
     
     Write-Log "" "INFO"
-    Write-Log "Broken torrent check completed" "INFO"
+    Write-Log "Torrent status check completed" "INFO"
     
     Show-CheckSummary
     
+    # Save current as previous for next check
     $Script:Stats.PreviousCheck.BrokenHashes = $Script:Stats.CurrentCheck.BrokenHashes
-    $Script:Stats.PreviousCheck.TriggeredHashes = $Script:Stats.CurrentCheck.BrokenHashes
+    $Script:Stats.PreviousCheck.UnderRepairHashes = $Script:Stats.CurrentCheck.UnderRepairHashes
+    # Combined list of all hashes that had repairs triggered
+    $Script:Stats.PreviousCheck.TriggeredHashes = $Script:Stats.CurrentCheck.BrokenHashes + $Script:Stats.CurrentCheck.UnderRepairHashes
 }
 
 function Show-Statistics {
@@ -354,6 +427,7 @@ function Show-Statistics {
     
     Write-Host "Total Checks Performed:    $($Script:Stats.TotalChecks)" -ForegroundColor Cyan
     Write-Host "Total Broken Found:        $($Script:Stats.BrokenFound)" -ForegroundColor Cyan
+    Write-Host "Total Under Repair Found:  $($Script:Stats.UnderRepairFound)" -ForegroundColor Cyan
     Write-Host "Total Repairs Triggered:   $($Script:Stats.RepairsTriggered)" -ForegroundColor Cyan
     Write-Host "Last Check:                $lastCheck" -ForegroundColor Cyan
     Write-Host "Last Broken Found:         $lastBroken" -ForegroundColor Cyan
@@ -366,7 +440,8 @@ function Show-CheckSummary {
     Write-Host "======================================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "CURRENT CHECK RESULTS:" -ForegroundColor Yellow
-    Write-Host "  Broken Torrents Found:     $($Script:Stats.CurrentCheck.BrokenFound)" -ForegroundColor Yellow
+    Write-Host "  Broken Torrents:           $($Script:Stats.CurrentCheck.BrokenFound)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.BrokenFound -gt 0) { "Yellow" } else { "Green" })
+    Write-Host "  Under Repair:              $($Script:Stats.CurrentCheck.UnderRepairFound)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.UnderRepairFound -gt 0) { "Cyan" } else { "Gray" })
     Write-Host "  Repairs Triggered:         $($Script:Stats.CurrentCheck.RepairsTriggered)" -ForegroundColor Green
     
     if ($Script:Stats.CurrentCheck.BrokenNames.Count -gt 0) {
@@ -377,38 +452,66 @@ function Show-CheckSummary {
         }
     }
     
+    if ($Script:Stats.CurrentCheck.UnderRepairNames.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  Under Repair:" -ForegroundColor Cyan
+        foreach ($name in $Script:Stats.CurrentCheck.UnderRepairNames) {
+            Write-Host "    - $name" -ForegroundColor Cyan
+        }
+    }
+    
     # Comparison with previous check (if exists)
-    if ($Script:Stats.PreviousCheck.BrokenHashes.Count -gt 0) {
+    if ($Script:Stats.PreviousCheck.TriggeredHashes.Count -gt 0) {
         Write-Host ""
         Write-Host "COMPARISON WITH PREVIOUS CHECK:" -ForegroundColor Cyan
         
-        # Calculate what was repaired (was broken, now not)
+        # Calculate what was repaired (was in previous check, now not in any list)
         $repairedCount = 0
         foreach ($hash in $Script:Stats.PreviousCheck.TriggeredHashes) {
-            if ($Script:Stats.CurrentCheck.BrokenHashes -notcontains $hash) {
+            if (($Script:Stats.CurrentCheck.BrokenHashes -notcontains $hash) -and 
+                ($Script:Stats.CurrentCheck.UnderRepairHashes -notcontains $hash)) {
                 $repairedCount++
             }
         }
         
-        # Calculate what's still broken from previous
+        # Calculate what moved from broken to under repair
+        $movedToRepairCount = 0
+        foreach ($hash in $Script:Stats.PreviousCheck.BrokenHashes) {
+            if ($Script:Stats.CurrentCheck.UnderRepairHashes -contains $hash) {
+                $movedToRepairCount++
+            }
+        }
+        
+        # Calculate what's still broken
         $stillBrokenCount = 0
-        foreach ($hash in $Script:Stats.PreviousCheck.TriggeredHashes) {
+        foreach ($hash in $Script:Stats.PreviousCheck.BrokenHashes) {
             if ($Script:Stats.CurrentCheck.BrokenHashes -contains $hash) {
                 $stillBrokenCount++
             }
         }
         
-        # Calculate new broken (not in previous check)
+        # Calculate what's still under repair
+        $stillUnderRepairCount = 0
+        foreach ($hash in $Script:Stats.PreviousCheck.UnderRepairHashes) {
+            if ($Script:Stats.CurrentCheck.UnderRepairHashes -contains $hash) {
+                $stillUnderRepairCount++
+            }
+        }
+        
+        # Calculate new broken (not in previous check at all)
         $newBrokenCount = 0
         foreach ($hash in $Script:Stats.CurrentCheck.BrokenHashes) {
-            if ($Script:Stats.PreviousCheck.BrokenHashes -notcontains $hash) {
+            if (($Script:Stats.PreviousCheck.BrokenHashes -notcontains $hash) -and 
+                ($Script:Stats.PreviousCheck.UnderRepairHashes -notcontains $hash)) {
                 $newBrokenCount++
             }
         }
         
         Write-Host "  Successfully Repaired:     $repairedCount" -ForegroundColor $(if ($repairedCount -gt 0) { "Green" } else { "Gray" })
-        Write-Host "  Still Broken (from prev):  $stillBrokenCount" -ForegroundColor $(if ($stillBrokenCount -gt 0) { "Yellow" } else { "Green" })
-        Write-Host "  New Broken (not in prev):  $newBrokenCount" -ForegroundColor $(if ($newBrokenCount -gt 0) { "Yellow" } else { "Green" })
+        Write-Host "  Moved to Repair:           $movedToRepairCount" -ForegroundColor $(if ($movedToRepairCount -gt 0) { "Cyan" } else { "Gray" })
+        Write-Host "  Still Broken:              $stillBrokenCount" -ForegroundColor $(if ($stillBrokenCount -gt 0) { "Yellow" } else { "Gray" })
+        Write-Host "  Still Under Repair:        $stillUnderRepairCount" -ForegroundColor $(if ($stillUnderRepairCount -gt 0) { "Cyan" } else { "Gray" })
+        Write-Host "  New Broken:                $newBrokenCount" -ForegroundColor $(if ($newBrokenCount -gt 0) { "Red" } else { "Gray" })
         
         # Calculate success rate
         if ($Script:Stats.PreviousCheck.TriggeredHashes.Count -gt 0) {
@@ -423,7 +526,7 @@ function Show-CheckSummary {
 }
 
 function Start-MonitoringLoop {
-    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.0"
+    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.1"
     
     Write-Log "Starting Zurg Broken Torrent Monitor" "INFO"
     Write-Log "Zurg URL: $ZurgUrl" "INFO"
