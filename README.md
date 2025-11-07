@@ -1,80 +1,157 @@
-# Zurg Broken Torrent Monitor
+# Zurg Broken Torrent Monitor & Repair Tool
 
-![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+[![Version](https://img.shields.io/badge/version-2.2.0-blue.svg)](https://github.com/maddguru/zurg-broken-torrent-monitor/releases/latest)
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/PowerShell/PowerShell#get-powershell)
 
-A PowerShell script that continuously monitors [Zurg](https://github.com/debridmediamanager/zurg-testing) for broken torrents and automatically triggers repairs. This ensures your Plex/Jellyfin/Emby library stays healthy without manual intervention.
+**Automatically monitor and repair broken torrents in Zurg with comprehensive library health statistics.**
 
-## ✨ Features
+---
 
-- 🔍 **Automatic Detection** - Monitors Zurg for broken torrents using its native state filtering
-- 🔧 **Auto-Repair** - Automatically triggers repair for all broken torrents via Zurg's API
-- 📊 **Progress Tracking** - Shows repair success rates and comparisons between checks
-- 📝 **Comprehensive Logging** - Detailed logs with timestamps for troubleshooting
-- ⚙️ **Configurable** - Adjust check intervals, credentials, and other settings
-- 🎨 **Color-Coded Output** - Easy-to-read console output with status colors
+## 🎯 Overview
 
-## 📋 Requirements
+Zurg Broken Torrent Monitor is a PowerShell script that continuously monitors your Zurg instance for broken and under-repair torrents, automatically triggers repairs, and provides detailed statistics about your entire torrent library's health.
 
-- **PowerShell 5.1 or higher** (included with Windows 10/11)
-- **Zurg** - Must be running and accessible
-- **Network Access** - Script must be able to reach Zurg's API
+### Key Features
+
+- 🔍 **Monitors Broken Torrents** - Detects torrents in broken state
+- 🔧 **Automatic Repairs** - Triggers repair API for broken torrents
+- 🔄 **Under Repair Tracking** - Monitors and re-triggers stuck repairs
+- 📊 **Total Library Statistics** (NEW in v2.2) - Complete torrent count with health percentages
+- 📈 **Progress Tracking** - Compares results between checks
+- ✅ **Success Rate Metrics** - Shows repair effectiveness
+- 🎨 **Color-Coded Output** - Easy-to-read visual feedback
+- 📝 **Comprehensive Logging** - Detailed logs for troubleshooting
+- ⚙️ **Flexible Scheduling** - Run once or continuous monitoring
+- 🔐 **Authentication Support** - Basic auth for secured Zurg instances
+
+---
+
+## 📊 What's New in v2.2
+
+**Total Torrent Statistics Display:**
+
+```
+TORRENT STATISTICS:
+  Total Torrents:            5,277
+  OK Torrents:               5,264 (99.75%)
+  Broken:                        8 (0.15%)
+  Under Repair:                  5 (0.10%)
+```
+
+Get instant visibility into your entire library's health with contextual percentages that help you understand whether issues are isolated or widespread.
+
+[See full v2.2 update notes →](V2.2-UPDATE-NOTES.md)
+
+---
+
+## 📸 Screenshots
+
+### Check Summary
+```
+======================================================================
+  CHECK SUMMARY
+======================================================================
+
+TORRENT STATISTICS:
+  Total Torrents:            5,277
+  OK Torrents:               5,264 (99.75%)
+  Broken:                        8 (0.15%)
+  Under Repair:                  5 (0.10%)
+
+CURRENT CHECK RESULTS:
+  Broken Torrents:           8
+  Under Repair:              5
+  Repairs Triggered:         13
+
+  Broken Torrents:
+    - Movie.Title.2023.2160p.WEB-DL.mkv
+    - TV.Show.S01E05.1080p.HDTV.mkv
+    ...
+
+COMPARISON WITH PREVIOUS CHECK:
+  Successfully Repaired:     3
+  Moved to Repair:           2
+  Still Broken:              3
+  Still Under Repair:        2
+  New Broken:                1
+  Repair Success Rate:       60.0%
+```
+
+---
 
 ## 🚀 Quick Start
 
-### 1. Download
+### Prerequisites
 
-Download `Zurg-Broken-Torrent-Monitor.ps1` from the [latest release](https://github.com/maddguru/zurg-broken-torrent-monitor/releases).
+- **Zurg** instance running and accessible
+- **PowerShell 5.1+** (Windows) or **PowerShell Core 7.0+** (Linux/macOS)
+- Network access to Zurg's web interface
 
-### 2. Configure (Optional)
+### Installation
 
-Edit the script parameters at the top, or pass them via command line:
-
+**Windows (PowerShell pre-installed):**
 ```powershell
-# Default settings
-$ZurgUrl = "http://localhost:9999"
-$Username = "riven"
-$Password = "12345"
-$CheckIntervalMinutes = 30
+# Download the script
+Invoke-WebRequest -Uri "https://github.com/maddguru/zurg-broken-torrent-monitor/releases/download/v2.2.0/Zurg-Broken-Torrent-Monitor.ps1" -OutFile "Zurg-Broken-Torrent-Monitor.ps1"
+
+# Run it
+.\Zurg-Broken-Torrent-Monitor.ps1 -RunOnce
 ```
 
-### 3. Run
+**Linux:**
+```bash
+# Install PowerShell Core (if not already installed)
+# Ubuntu/Debian:
+sudo apt-get update
+sudo apt-get install -y powershell
 
-**Test it once:**
+# Download the script
+wget https://github.com/maddguru/zurg-broken-torrent-monitor/releases/download/v2.2.0/Zurg-Broken-Torrent-Monitor.ps1
+
+# Run it
+pwsh ./Zurg-Broken-Torrent-Monitor.ps1 -RunOnce
+```
+
+**macOS:**
+```bash
+# Install PowerShell Core (if not already installed)
+brew install powershell
+
+# Download the script
+curl -L -O https://github.com/maddguru/zurg-broken-torrent-monitor/releases/download/v2.2.0/Zurg-Broken-Torrent-Monitor.ps1
+
+# Run it
+pwsh ./Zurg-Broken-Torrent-Monitor.ps1 -RunOnce
+```
+
+**Docker (Alternative):**
+```bash
+# Run directly in a PowerShell container
+docker run --rm -v $(pwd):/workspace mcr.microsoft.com/powershell:latest \
+  pwsh /workspace/Zurg-Broken-Torrent-Monitor.ps1 -ZurgUrl "http://host.docker.internal:9999" -RunOnce
+```
+
+---
+
+## 📖 Usage
+
+### Basic Usage
+
+**Single check (test mode):**
 ```powershell
 .\Zurg-Broken-Torrent-Monitor.ps1 -RunOnce
 ```
 
-**Run continuously:**
+**Continuous monitoring (every 30 minutes):**
 ```powershell
-.\Zurg-Broken-Torrent-Monitor.ps1
+.\Zurg-Broken-Torrent-Monitor.ps1 -CheckIntervalMinutes 30
 ```
 
-**Custom interval (every 15 minutes):**
+**With authentication:**
 ```powershell
-.\Zurg-Broken-Torrent-Monitor.ps1 -CheckIntervalMinutes 15
-```
-
-## 📖 Usage
-
-### Command Line Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-ZurgUrl` | String | `http://localhost:9999` | Zurg server URL |
-| `-Username` | String | `riven` | Zurg basic auth username |
-| `-Password` | String | `12345` | Zurg basic auth password |
-| `-CheckIntervalMinutes` | Int | `30` | Minutes between checks |
-| `-LogFile` | String | `zurg-broken-torrent-monitor.log` | Log file path |
-| `-RunOnce` | Switch | Off | Run once and exit |
-| `-VerboseLogging` | Switch | Off | Enable debug output |
-
-### Examples
-
-**Basic usage with defaults:**
-```powershell
-.\Zurg-Broken-Torrent-Monitor.ps1
+.\Zurg-Broken-Torrent-Monitor.ps1 -Username "riven" -Password "12345"
 ```
 
 **Custom Zurg URL:**
@@ -82,176 +159,364 @@ $CheckIntervalMinutes = 30
 .\Zurg-Broken-Torrent-Monitor.ps1 -ZurgUrl "http://192.168.1.100:9999"
 ```
 
-**Check every 5 minutes with verbose logging:**
+**Verbose logging:**
 ```powershell
-.\Zurg-Broken-Torrent-Monitor.ps1 -CheckIntervalMinutes 5 -VerboseLogging
+.\Zurg-Broken-Torrent-Monitor.ps1 -VerboseLogging
 ```
-
-**Single check (useful for testing):**
-```powershell
-.\Zurg-Broken-Torrent-Monitor.ps1 -RunOnce
-```
-
-## 📊 Sample Output
-
-```
-========================================================================
-  ZURG BROKEN TORRENT MONITOR v2.0
-========================================================================
-
-[2025-10-31 17:21:13] [INFO] Starting Zurg Broken Torrent Monitor
-[2025-10-31 17:21:13] [SUCCESS] Successfully connected to Zurg
-[2025-10-31 17:21:14] [INFO] Found 8 broken torrent(s)
-[2025-10-31 17:21:14] [WARN]   Found broken torrent: Show.Name.S01.1080p
-[2025-10-31 17:21:15] [SUCCESS] Successfully triggered repair for: Show.Name.S01.1080p
-
-======================================================================
-  CHECK SUMMARY
-======================================================================
-
-CURRENT CHECK RESULTS:
-  Broken Torrents Found:     8
-  Repairs Triggered:         8
-
-  Broken Torrents:
-    - Show.Name.S01.1080p
-    - Movie.Title.2024.1080p
-    - Another.Show.S02.720p
-
-COMPARISON WITH PREVIOUS CHECK:
-  Successfully Repaired:     2
-  Still Broken (from prev):  6
-  New Broken (not in prev):  0
-  Repair Success Rate:       25.0%
-
-======================================================================
-```
-
-## 🔧 Running as a Service
-
-### Option 1: Windows Task Scheduler
-
-1. Open Task Scheduler (`taskschd.msc`)
-2. Create Task → General tab:
-   - Name: `Zurg Broken Torrent Monitor`
-   - Run whether user is logged on or not
-3. Triggers tab → New:
-   - Begin: `At startup`
-   - Advanced: Repeat every 30 minutes
-4. Actions tab → New:
-   - Program: `powershell.exe`
-   - Arguments: `-ExecutionPolicy Bypass -NoProfile -File "C:\Path\To\Zurg-Broken-Torrent-Monitor.ps1"`
-
-### Option 2: NSSM (Recommended)
-
-Download [NSSM](https://nssm.cc/download) and install as a service:
-
-```powershell
-# Install service
-nssm install ZurgMonitor "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
-  "-ExecutionPolicy Bypass -NoProfile -File C:\Path\To\Zurg-Broken-Torrent-Monitor.ps1"
-
-# Set to start automatically
-nssm set ZurgMonitor Start SERVICE_AUTO_START
-
-# Start the service
-nssm start ZurgMonitor
-```
-
-**Manage the service:**
-```powershell
-nssm status ZurgMonitor   # Check status
-nssm stop ZurgMonitor     # Stop service
-nssm start ZurgMonitor    # Start service
-nssm remove ZurgMonitor   # Remove service
-```
-
-## 🐛 Troubleshooting
-
-### Connection Failed
-
-**Error:** `Failed to connect to Zurg`
-
-**Solutions:**
-- Verify Zurg is running: `curl http://localhost:9999/stats`
-- Check firewall settings
-- Verify the URL is correct (include `http://`)
-
-### Authentication Failed
-
-**Error:** `401 Unauthorized`
-
-**Solutions:**
-- Check username/password match your `config.yml`
-- Verify credentials are correct (default: `riven` / `12345`)
-
-### Execution Policy Error
-
-**Error:** `cannot be loaded because running scripts is disabled`
-
-**Solution:**
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-### Script Finds Different Torrents Than Web UI
-
-This shouldn't happen! The script fetches the exact same filtered page as the web interface. If you see this:
-1. Enable verbose logging: `-VerboseLogging`
-2. Check the log file for details
-3. Open an issue with the log output
-
-## 📁 Log Files
-
-Logs are saved to `zurg-broken-torrent-monitor.log` by default. The log includes:
-- All detected broken torrents
-- Repair attempts and results
-- Statistics and comparisons
-- Error messages for troubleshooting
-
-View recent logs:
-```powershell
-Get-Content zurg-broken-torrent-monitor.log -Tail 50
-```
-
-## 🔄 How It Works
-
-1. **Fetch Broken Torrents** - Queries Zurg's `/manage/?state=status_broken` endpoint
-2. **Extract Names** - Parses HTML to get torrent hashes and names
-3. **Trigger Repairs** - Calls `/manage/{hash}/repair` for each broken torrent
-4. **Track Progress** - Compares with previous check to show repair success rate
-5. **Repeat** - Waits for configured interval and starts again
-
-This ensures the script finds **exactly the same torrents** as Zurg's web interface.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Zurg](https://github.com/debridmediamanager/zurg-testing) - The amazing tool this script monitors
-- All contributors and users who provide feedback
-
-## 📞 Support
-
-- **Issues:** [GitHub Issues](https://github.com/maddguru/zurg-broken-torrent-monitor/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/maddguru/zurg-broken-torrent-monitor/discussions)
-
-## ⭐ Star History
-
-If you find this useful, please consider giving it a star! ⭐
 
 ---
 
-**Note:** This script is not affiliated with or endorsed by Zurg or Debrid Media Manager. It's a community tool to help automate torrent maintenance.
+## ⚙️ Configuration
+
+### Command-Line Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `-ZurgUrl` | String | `http://localhost:9999` | Base URL of your Zurg instance |
+| `-Username` | String | `riven` | Username for Zurg authentication |
+| `-Password` | String | `12345` | Password for Zurg authentication |
+| `-CheckIntervalMinutes` | Integer | `30` | Minutes between checks (min: 1) |
+| `-LogFile` | String | `zurg-broken-torrent-monitor.log` | Path to log file |
+| `-RunOnce` | Switch | `false` | Run a single check and exit |
+| `-VerboseLogging` | Switch | `false` | Enable detailed debug output |
+
+### Examples
+
+**Run every 15 minutes with custom settings:**
+```powershell
+.\Zurg-Broken-Torrent-Monitor.ps1 `
+  -ZurgUrl "http://zurg.example.com:9999" `
+  -Username "admin" `
+  -Password "secretpass" `
+  -CheckIntervalMinutes 15 `
+  -LogFile "C:\Logs\zurg-monitor.log"
+```
+
+**Quick health check:**
+```powershell
+.\Zurg-Broken-Torrent-Monitor.ps1 -RunOnce -VerboseLogging
+```
+
+---
+
+## 🖥️ Platform Support
+
+### Windows
+- ✅ **Built-in Support** - PowerShell 5.1+ comes pre-installed
+- ✅ **Windows Service** - Can run as a service with NSSM
+- ✅ **Task Scheduler** - Easy scheduling with Windows Task Scheduler
+
+### Linux
+- ✅ **PowerShell Core** - Install via package manager
+- ✅ **Systemd** - Run as a systemd service
+- ✅ **Cron** - Schedule with cron jobs
+- ✅ **Docker** - Run in containers
+
+### macOS
+- ✅ **PowerShell Core** - Install via Homebrew
+- ✅ **LaunchAgent** - Run as a launch agent
+- ✅ **Cron** - Schedule with cron jobs
+
+**Installing PowerShell Core:**
+
+| Platform | Installation Command |
+|----------|---------------------|
+| **Ubuntu/Debian** | `sudo apt-get install -y powershell` |
+| **CentOS/RHEL** | `sudo yum install -y powershell` |
+| **Fedora** | `sudo dnf install -y powershell` |
+| **macOS** | `brew install powershell` |
+| **Windows** | Pre-installed (5.1+) or [Download PowerShell 7+](https://aka.ms/powershell) |
+| **Docker** | `docker pull mcr.microsoft.com/powershell:latest` |
+
+[PowerShell Installation Guide →](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell)
+
+---
+
+## 🔄 Automation Examples
+
+### Windows Task Scheduler
+
+1. Open Task Scheduler
+2. Create Basic Task
+3. Trigger: Daily (or as desired)
+4. Action: Start a program
+   - Program: `powershell.exe`
+   - Arguments: `-File "C:\Path\To\Zurg-Broken-Torrent-Monitor.ps1" -CheckIntervalMinutes 30`
+
+### Linux Systemd Service
+
+Create `/etc/systemd/system/zurg-monitor.service`:
+
+```ini
+[Unit]
+Description=Zurg Broken Torrent Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/opt/zurg-monitor
+ExecStart=/usr/bin/pwsh /opt/zurg-monitor/Zurg-Broken-Torrent-Monitor.ps1 -CheckIntervalMinutes 30
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable zurg-monitor
+sudo systemctl start zurg-monitor
+sudo systemctl status zurg-monitor
+```
+
+### Linux Cron Job
+
+Run every 30 minutes:
+```bash
+crontab -e
+
+# Add this line:
+*/30 * * * * /usr/bin/pwsh /path/to/Zurg-Broken-Torrent-Monitor.ps1 -RunOnce >> /var/log/zurg-monitor.log 2>&1
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  zurg-monitor:
+    image: mcr.microsoft.com/powershell:latest
+    container_name: zurg-monitor
+    volumes:
+      - ./Zurg-Broken-Torrent-Monitor.ps1:/app/monitor.ps1
+      - ./logs:/logs
+    command: >
+      pwsh /app/monitor.ps1
+      -ZurgUrl "http://zurg:9999"
+      -CheckIntervalMinutes 30
+      -LogFile "/logs/zurg-monitor.log"
+    restart: unless-stopped
+```
+
+---
+
+## 📊 Understanding the Output
+
+### Torrent Statistics Section (v2.2+)
+
+- **Total Torrents**: Complete count of all torrents in Zurg
+- **OK Torrents**: Working torrents (percentage of total)
+- **Broken**: Torrents that failed and need repair
+- **Under Repair**: Torrents currently being repaired
+
+**Health Guidelines:**
+
+| Broken % | Status | Recommended Action |
+|----------|--------|-------------------|
+| 0-0.5% | 😊 Excellent | Continue monitoring |
+| 0.5-2% | 😐 Acceptable | Keep an eye on trends |
+| 2-5% | 😟 Concerning | Investigate causes |
+| 5%+ | 😱 Critical | Immediate attention needed |
+
+### Comparison Section
+
+Shows progress since last check:
+- **Successfully Repaired**: Torrents that were fixed
+- **Moved to Repair**: Torrents that transitioned from broken to repairing
+- **Still Broken**: Torrents that remain broken
+- **Still Under Repair**: Torrents still being repaired
+- **New Broken**: Newly detected broken torrents
+- **Repair Success Rate**: Percentage of repairs that completed
+
+---
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+**"Cannot connect to Zurg"**
+```powershell
+# Test connection manually
+Test-NetConnection -ComputerName localhost -Port 9999
+
+# Check Zurg URL is correct
+curl http://localhost:9999/stats
+```
+
+**"Total Torrents shows 0"**
+- Verify `/manage/` endpoint is accessible
+- Check authentication credentials
+- Enable verbose logging: `-VerboseLogging`
+
+**"Script shows wrong version"**
+```powershell
+# Check script version
+Get-Content .\Zurg-Broken-Torrent-Monitor.ps1 | Select-String "v2.2"
+```
+
+**"Repairs not working"**
+- Verify Zurg's repair functionality is working via web UI
+- Check logs for API errors
+- Ensure proper authentication
+
+**Cross-platform path issues (Linux/macOS):**
+```bash
+# Use forward slashes for log file paths
+pwsh ./Zurg-Broken-Torrent-Monitor.ps1 -LogFile "/var/log/zurg-monitor.log"
+```
+
+### Debug Mode
+
+Enable verbose logging to see detailed information:
+```powershell
+.\Zurg-Broken-Torrent-Monitor.ps1 -VerboseLogging
+```
+
+Check the log file:
+```powershell
+# Windows
+Get-Content .\zurg-broken-torrent-monitor.log -Tail 50
+
+# Linux/macOS
+tail -f zurg-broken-torrent-monitor.log
+```
+
+---
+
+## 📈 Performance
+
+### Resource Usage
+
+- **Memory**: ~20-40 MB during execution
+- **CPU**: Minimal (< 1% average)
+- **Network**: 3 HTTP requests per check cycle
+- **Disk**: Log file grows ~1 KB per check
+
+### API Calls Per Check
+
+1. `GET /stats` - Connection test
+2. `GET /manage/?state=status_broken` - Broken torrents
+3. `GET /manage/?state=status_under_repair` - Under repair
+4. `GET /manage/` - Total torrent count (v2.2+)
+5. `POST /manage/{hash}/repair` - For each torrent needing repair
+
+**Typical check duration:** 2-5 seconds for 5,000+ torrents
+
+---
+
+## 🔐 Security Considerations
+
+- **Credentials**: Passed via command-line (visible in process list)
+  - For production: Consider using Windows Credential Manager or environment variables
+- **Network**: Uses HTTP basic authentication
+  - Secure your Zurg instance with HTTPS if possible
+- **Logs**: May contain torrent names
+  - Set appropriate file permissions on log files
+
+**Best Practices:**
+```powershell
+# Use environment variables for credentials
+$env:ZURG_USERNAME = "admin"
+$env:ZURG_PASSWORD = "secret"
+
+# Reference in script execution or modify script to read from env
+```
+
+---
+
+## 📚 Documentation
+
+- [V2.2 Update Notes](V2.2-UPDATE-NOTES.md) - What's new in v2.2
+- [Quick Reference](V2.2-QUICK-REFERENCE.md) - Quick feature overview
+- [Changelog](CHANGELOG.md) - Complete version history
+- [Contributing](CONTRIBUTING.md) - How to contribute
+- [Configuration Guide](CONFIGURATION.md) - Advanced configuration
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Areas for Contribution
+
+- 🐍 **Python version** for better Linux/macOS native support
+- 🐳 **Docker image** with pre-configured environment
+  
+---
+
+## 📝 Version History
+
+| Version | Date | Key Features |
+|---------|------|--------------|
+| **2.2.0** | 2025-11-06 | Total torrent statistics with health percentages |
+| **2.1.0** | 2025-11-05 | Under repair monitoring and enhanced comparison |
+| **2.0.0** | 2025-11-05 | Fixed torrent detection and repair endpoints |
+| **1.0.0** | 2025-10-28 | Initial release with basic monitoring |
+
+[Full changelog →](CHANGELOG.md)
+
+---
+
+## ❓ FAQ
+
+**Q: Does this work with Plex?**  
+A: Yes! This monitors Zurg, which serves content to Plex. It helps keep your Plex library healthy.
+
+**Q: Can I run this on a NAS?**  
+A: Yes, if your NAS supports PowerShell Core or Docker.
+
+**Q: How often should I run checks?**  
+A: Every 15-30 minutes is recommended. More frequent checks won't harm but may be unnecessary.
+
+**Q: Will this delete any torrents?**  
+A: No, it only triggers Zurg's repair function. It never deletes anything.
+
+**Q: Why PowerShell instead of Python/Bash?**  
+A: PowerShell provides excellent HTTP/JSON handling and cross-platform support. However, a Python version may be added in the future for users who prefer it.
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- [Zurg](https://github.com/debridmediamanager/zurg-testing) - The awesome torrent manager this tool monitors
+- PowerShell Community - For excellent cross-platform scripting capabilities
+- All contributors and users who provide feedback
+
+---
+
+## 💬 Support
+
+- **Issues**: [GitHub Issues](https://github.com/maddguru/zurg-broken-torrent-monitor/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/maddguru/zurg-broken-torrent-monitor/discussions)
+- **Documentation**: [Wiki](https://github.com/maddguru/zurg-broken-torrent-monitor/wiki)
+
+---
+
+## 🔗 Related Projects
+
+- [Zurg](https://github.com/debridmediamanager/zurg-testing) - Real-Debrid WebDAV integration
+- [rclone](https://rclone.org/) - Cloud storage mounting
+- [Plex](https://www.plex.tv/) - Media server
+
+---
+
+## ⭐ Star History
+
+If you find this tool useful, please consider starring the repository!
+
+---
+
+**Made with ❤️ for the Zurg community**
+
+[⬆ Back to top](#zurg-broken-torrent-monitor--repair-tool)
