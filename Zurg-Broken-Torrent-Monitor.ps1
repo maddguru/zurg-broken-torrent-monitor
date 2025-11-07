@@ -1,5 +1,5 @@
 # ============================================================================
-# Zurg Broken Torrent Monitor & Repair Tool v2.1
+# Zurg Broken Torrent Monitor & Repair Tool v2.2
 # ============================================================================
 
 [CmdletBinding()]
@@ -42,6 +42,8 @@ $Script:Stats = @{
         BrokenNames = @()
         UnderRepairHashes = @()
         UnderRepairNames = @()
+        TotalTorrents = 0
+        OkTorrents = 0
     }
     PreviousCheck = @{
         BrokenHashes = @()
@@ -259,6 +261,50 @@ function Get-ZurgTorrentsByState {
     }
 }
 
+function Get-ZurgTotalTorrentStats {
+    try {
+        Write-Log "Fetching total torrent statistics..." "DEBUG"
+        $headers = Get-AuthHeaders
+        
+        $url = "$ZurgUrl/manage/"
+        Write-Log "Fetching: $url" "DEBUG"
+        
+        try {
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 30 -ErrorAction Stop -UseBasicParsing
+            $content = $response.Content
+            
+            Write-Log "Successfully fetched torrents page (length: $($content.Length) bytes)" "DEBUG"
+        }
+        catch {
+            Write-Log "Failed to fetch torrents page: $($_.Exception.Message)" "ERROR"
+            return $null
+        }
+        
+        # Count total torrents by finding all unique data-hash attributes
+        $hashPattern = 'data-hash="([a-fA-F0-9]{40})"'
+        $hashMatches = [regex]::Matches($content, $hashPattern)
+        
+        # Use a hashtable to get unique hashes
+        $uniqueHashes = @{}
+        foreach ($match in $hashMatches) {
+            $hash = $match.Groups[1].Value.ToLower()
+            $uniqueHashes[$hash] = $true
+        }
+        
+        $totalTorrents = $uniqueHashes.Count
+        Write-Log "Found $totalTorrents total torrent(s)" "DEBUG"
+        
+        return @{
+            TotalTorrents = $totalTorrents
+        }
+    }
+    catch {
+        Write-Log "Error getting total torrent stats: $($_.Exception.Message)" "ERROR"
+        Write-Log "Stack trace: $($_.ScriptStackTrace)" "DEBUG"
+        return $null
+    }
+}
+
 function Invoke-TorrentRepair {
     param(
         [string]$Hash,
@@ -305,6 +351,14 @@ function Start-BrokenTorrentCheck {
         BrokenNames = @()
         UnderRepairHashes = @()
         UnderRepairNames = @()
+        TotalTorrents = 0
+        OkTorrents = 0
+    }
+    
+    # Get total torrent statistics
+    $totalStats = Get-ZurgTotalTorrentStats
+    if ($null -ne $totalStats) {
+        $Script:Stats.CurrentCheck.TotalTorrents = $totalStats.TotalTorrents
     }
     
     # Get broken torrents
@@ -337,6 +391,13 @@ function Start-BrokenTorrentCheck {
     if ($null -ne $underRepairTorrents) {
         $Script:Stats.CurrentCheck.UnderRepairFound = $underRepairTorrents.Count
         $Script:Stats.UnderRepairFound += $underRepairTorrents.Count
+    }
+    
+    # Calculate OK torrents
+    if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
+        $Script:Stats.CurrentCheck.OkTorrents = $Script:Stats.CurrentCheck.TotalTorrents - 
+                                                 $Script:Stats.CurrentCheck.BrokenFound - 
+                                                 $Script:Stats.CurrentCheck.UnderRepairFound
     }
     
     Write-Log "Found $($Script:Stats.CurrentCheck.BrokenFound) broken torrent(s)" "INFO"
@@ -439,6 +500,31 @@ function Show-CheckSummary {
     Write-Host "  CHECK SUMMARY" -ForegroundColor Cyan
     Write-Host "======================================================================" -ForegroundColor Cyan
     Write-Host ""
+    
+    # Display total torrent statistics if available
+    if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
+        Write-Host "TORRENT STATISTICS:" -ForegroundColor Magenta
+        Write-Host "  Total Torrents:            $($Script:Stats.CurrentCheck.TotalTorrents)" -ForegroundColor White
+        
+        # Calculate percentages
+        $okPercentage = if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
+            [math]::Round(($Script:Stats.CurrentCheck.OkTorrents / $Script:Stats.CurrentCheck.TotalTorrents) * 100, 2)
+        } else { 0 }
+        
+        $brokenPercentage = if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
+            [math]::Round(($Script:Stats.CurrentCheck.BrokenFound / $Script:Stats.CurrentCheck.TotalTorrents) * 100, 2)
+        } else { 0 }
+        
+        $repairPercentage = if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
+            [math]::Round(($Script:Stats.CurrentCheck.UnderRepairFound / $Script:Stats.CurrentCheck.TotalTorrents) * 100, 2)
+        } else { 0 }
+        
+        Write-Host "  OK Torrents:               $($Script:Stats.CurrentCheck.OkTorrents) ($okPercentage%)" -ForegroundColor Green
+        Write-Host "  Broken:                    $($Script:Stats.CurrentCheck.BrokenFound) ($brokenPercentage%)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.BrokenFound -gt 0) { "Yellow" } else { "Gray" })
+        Write-Host "  Under Repair:              $($Script:Stats.CurrentCheck.UnderRepairFound) ($repairPercentage%)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.UnderRepairFound -gt 0) { "Cyan" } else { "Gray" })
+        Write-Host ""
+    }
+    
     Write-Host "CURRENT CHECK RESULTS:" -ForegroundColor Yellow
     Write-Host "  Broken Torrents:           $($Script:Stats.CurrentCheck.BrokenFound)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.BrokenFound -gt 0) { "Yellow" } else { "Green" })
     Write-Host "  Under Repair:              $($Script:Stats.CurrentCheck.UnderRepairFound)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.UnderRepairFound -gt 0) { "Cyan" } else { "Gray" })
@@ -526,7 +612,7 @@ function Show-CheckSummary {
 }
 
 function Start-MonitoringLoop {
-    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.1"
+    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.2"
     
     Write-Log "Starting Zurg Broken Torrent Monitor" "INFO"
     Write-Log "Zurg URL: $ZurgUrl" "INFO"
