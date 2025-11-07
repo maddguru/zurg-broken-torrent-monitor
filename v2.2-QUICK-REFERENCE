@@ -1,0 +1,202 @@
+# v2.2 Quick Reference Card
+
+## 🎯 What's New in 30 Seconds
+
+**v2.2 adds total torrent statistics to show your complete library health at a glance.**
+
+---
+
+## 📊 New Display Section
+
+Every check now shows:
+
+```
+TORRENT STATISTICS:
+  Total Torrents:            5,277      ← Your complete library size
+  OK Torrents:               5,264 (99.75%)  ← Working perfectly
+  Broken:                        8 (0.15%)   ← Need repair
+  Under Repair:                  5 (0.10%)   ← Being fixed
+```
+
+---
+
+## 🚀 Upgrade in 3 Steps
+
+1. **Download** the new v2.2 script
+2. **Replace** your old script file
+3. **Run** - that's it!
+
+No configuration changes needed. ✅
+
+---
+
+## 💪 Why Upgrade?
+
+| Without v2.2 | With v2.2 |
+|--------------|-----------|
+| "8 broken torrents" 😕 | "8 broken (0.15%) - Healthy!" 😊 |
+| No context | Full context |
+| Can't assess health | Clear health metrics |
+
+---
+
+## 🔧 Technical Details
+
+- **New Function**: `Get-ZurgTotalTorrentStats`
+- **API Calls**: +1 per check (to `/manage/`)
+- **Performance**: <1 second added
+- **Breaking Changes**: None
+
+---
+
+## ⚡ Performance Impact
+
+```
+v2.1: 2 API calls per check (~2 seconds)
+v2.2: 3 API calls per check (~3 seconds)
+
+Impact: Minimal - barely noticeable
+```
+
+---
+
+## 🎨 Color Guide
+
+- **White**: Total torrent count
+- **Green**: OK torrents (healthy)
+- **Yellow**: Broken (if any)
+- **Cyan**: Under repair (if any)
+- **Gray**: Zero count (none found)
+
+---
+
+## 📈 Example Scenarios
+
+### Healthy Library
+```
+Total: 5,000 | OK: 4,995 (99.9%) | Broken: 3 (0.06%) | Repair: 2 (0.04%)
+Status: ✅ Excellent health!
+```
+
+### Needs Attention
+```
+Total: 5,000 | OK: 4,850 (97%) | Broken: 100 (2%) | Repair: 50 (1%)
+Status: ⚠️ Consider investigating
+```
+
+### Critical
+```
+Total: 5,000 | OK: 4,500 (90%) | Broken: 400 (8%) | Repair: 100 (2%)
+Status: 🚨 Immediate attention needed
+```
+
+---
+
+## 🔢 Understanding Percentages
+
+| Broken % | Status | Action |
+|----------|--------|--------|
+| 0-0.5% | 😊 Excellent | Monitor normally |
+| 0.5-2% | 😐 Acceptable | Keep an eye on it |
+| 2-5% | 😟 Concerning | Investigate |
+| 5%+ | 😱 Critical | Urgent attention |
+
+---
+
+## 🆚 Version Comparison
+
+| Metric | v2.0 | v2.1 | v2.2 |
+|--------|------|------|------|
+| API Calls | 1 | 2 | 3 |
+| Shows Broken | ✅ | ✅ | ✅ |
+| Shows Under Repair | ❌ | ✅ | ✅ |
+| Shows Total | ❌ | ❌ | ✅ |
+| Shows OK Count | ❌ | ❌ | ✅ |
+| Percentages | ❌ | ❌ | ✅ |
+
+---
+
+## 📋 Usage Examples
+
+### Run Once (Test)
+```powershell
+.\Zurg-Broken-Torrent-Monitor.ps1 -RunOnce
+```
+
+### Continuous Monitoring
+```powershell
+.\Zurg-Broken-Torrent-Monitor.ps1 -CheckIntervalMinutes 30
+```
+
+### With Custom URL
+```powershell
+.\Zurg-Broken-Torrent-Monitor.ps1 `
+  -ZurgUrl "http://192.168.1.100:9999" `
+  -Username "admin" `
+  -Password "secret123"
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### "TotalTorrents shows 0"
+- Check Zurg `/manage/` endpoint is accessible
+- Verify authentication credentials
+- Check logs with `-VerboseLogging`
+
+### "Percentages don't add to 100%"
+- Normal! Some torrents might be in other states
+- Unrepairable, pending, etc. are not counted
+
+### "Slow performance"
+- Expected with 10,000+ torrents
+- Consider increasing check interval
+- Each check takes ~3-5 seconds max
+
+---
+
+## ✅ Quick Verification
+
+After upgrading, check for:
+
+1. Banner shows: `v2.2` ✅
+2. `TORRENT STATISTICS` section appears ✅
+3. Percentages are displayed ✅
+4. No errors in log ✅
+
+---
+
+## 🔗 Useful Links
+
+- **Full Update Notes**: V2.2-UPDATE-NOTES.md
+- **Changelog**: CHANGELOG.md
+- **GitHub Instructions**: GITHUB-UPDATE-INSTRUCTIONS.md
+
+---
+
+## 💡 Pro Tips
+
+1. **Compare Runs**: Watch how percentages change over time
+2. **Set Thresholds**: Alert if broken % exceeds 1%
+3. **Log Analysis**: Parse logs for trend analysis
+4. **Health Checks**: Run with `-RunOnce` before maintenance
+
+---
+
+## 🎯 Key Takeaway
+
+**Before v2.2:** "How many broken?"
+**After v2.2:** "What % of my library is broken?"
+
+Context matters! 🎉
+
+---
+
+**Quick Start:** Just replace your script and run it - the new stats appear automatically!
+
+**Questions?** Check the full documentation files or GitHub issues.
+
+---
+
+**Version:** 2.2.0 | **Released:** November 6, 2025 | **Compatibility:** PowerShell 5.1+
