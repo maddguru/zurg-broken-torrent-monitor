@@ -5,7 +5,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 ## 🐛 Reporting Bugs
 
 Before submitting a bug report:
-1. Check if the issue already exists in [GitHub Issues](https://github.com/YOUR_USERNAME/zurg-broken-torrent-monitor/issues)
+1. Check if the issue already exists in [GitHub Issues](https://github.com/maddguru/zurg-broken-torrent-monitor/issues)
 2. Test with the latest version of the script
 3. Enable verbose logging (`-VerboseLogging`) to get detailed output
 
@@ -31,7 +31,7 @@ Feature requests are welcome! Please:
 1. Fork the repository
 2. Clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/zurg-broken-torrent-monitor.git
+   git clone https://github.com/maddguru/zurg-broken-torrent-monitor.git
    ```
 3. Create a branch:
    ```bash
@@ -95,7 +95,7 @@ Documentation improvements are always welcome! This includes:
 ## 🤔 Questions?
 
 Feel free to:
-- Open a [Discussion](https://github.com/YOUR_USERNAME/zurg-broken-torrent-monitor/discussions)
+- Open a [Discussion](https://github.com/maddguru/zurg-broken-torrent-monitor/discussions)
 - Ask in an existing Issue
 - Reach out to maintainers
 
