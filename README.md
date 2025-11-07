@@ -25,7 +25,7 @@ A PowerShell script that continuously monitors [Zurg](https://github.com/debridm
 
 ### 1. Download
 
-Download `Zurg-Broken-Torrent-Monitor.ps1` from the [latest release](https://github.com/YOUR_USERNAME/zurg-broken-torrent-monitor/releases).
+Download `Zurg-Broken-Torrent-Monitor.ps1` from the [latest release](https://github.com/maddguru/zurg-broken-torrent-monitor/releases).
 
 ### 2. Configure (Optional)
 
@@ -245,8 +245,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- **Issues:** [GitHub Issues](https://github.com/YOUR_USERNAME/zurg-broken-torrent-monitor/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/YOUR_USERNAME/zurg-broken-torrent-monitor/discussions)
+- **Issues:** [GitHub Issues](https://github.com/maddguru/zurg-broken-torrent-monitor/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/maddguru/zurg-broken-torrent-monitor/discussions)
 
 ## ⭐ Star History
 
