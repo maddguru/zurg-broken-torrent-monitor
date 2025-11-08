@@ -483,15 +483,7 @@ A: PowerShell provides excellent HTTP/JSON handling and cross-platform support. 
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- [Zurg](https://github.com/debridmediamanager/zurg-testing) - The awesome torrent manager this tool monitors
-- PowerShell Community - For excellent cross-platform scripting capabilities
-- All contributors and users who provide feedback
+This project will be free for the community to use.
 
 ---
 
@@ -516,6 +508,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 If you find this tool useful, please consider starring the repository!
 
 ---
+
+## 🙏 Acknowledgments
+
+- [Zurg](https://github.com/debridmediamanager/zurg-testing) - The awesome torrent manager this tool monitors
+- PowerShell Community - For excellent cross-platform scripting capabilities
+- All contributors and users who provide feedback
+
+**This little project was inspired by yowmamasita [Zurg/DebridMediaManager](https://github.com/debridmediamanager/zurg-testing) and godver3 [cli_debrid](https://github.com/godver3/cli_debrid). These two creators have spent countless hours building reliable tools for the community, and I have a deep appreciation for their work.  I am not even close to being a developer so I used my particular set of skills to instruct AI to bring this and a few other ideas to life. I had an idea of creating a simple, standalone backup solution, until this feature returns to Zurg. And here we are.**
 
 **Made with ❤️ for the Zurg community**
 
