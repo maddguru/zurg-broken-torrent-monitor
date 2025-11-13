@@ -6,7 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [2.2.1] - 2025-11-13
 
+### Fixed
+- **Critical:** Fixed PowerShell array unwrapping issue causing false "API failed" errors
+  - When library had 0 broken/under repair torrents, function returned empty array `@()`
+  - PowerShell automatically unwrapped empty arrays to `$null`
+  - Script incorrectly detected this as API failure
+  - Solution: Added comma operator (`,`) to preserve empty arrays in return statements
+- Healthy libraries (0 broken torrents) now correctly show SUCCESS message instead of ERROR
+
+### Technical Details
+- Changed line 255: `return $torrents` → `return ,$torrents`
+- One character fix that resolves the core issue
+- No configuration changes required
+- No breaking changes
+
+---
 ## [2.2.0] - 2025-11-06
 
 ### Added
