@@ -1,5 +1,5 @@
 # ============================================================================
-# Zurg Broken Torrent Monitor & Repair Tool v2.2
+# Zurg Broken Torrent Monitor & Repair Tool v2.2.1
 # ============================================================================
 
 [CmdletBinding()]
@@ -633,7 +633,7 @@ function Show-CheckSummary {
 }
 
 function Start-MonitoringLoop {
-    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.2"
+    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.2.1"
     
     Write-Log "Starting Zurg Broken Torrent Monitor" "INFO"
     Write-Log "Zurg URL: $ZurgUrl" "INFO"
