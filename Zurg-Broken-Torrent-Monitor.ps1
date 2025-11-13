@@ -252,7 +252,7 @@ function Get-ZurgTorrentsByState {
         }
         
         Write-Log "Successfully parsed $($torrents.Count) $stateName torrent(s)" "DEBUG"
-        return $torrents
+        return ,$torrents
     }
     catch {
         Write-Log "Error getting $stateName torrents: $($_.Exception.Message)" "ERROR"
@@ -367,11 +367,27 @@ function Start-BrokenTorrentCheck {
     # Get under repair torrents
     $underRepairTorrents = Get-ZurgTorrentsByState -State "status_under_repair"
     
-    if ($null -eq $brokenTorrents -and $null -eq $underRepairTorrents) {
-        Write-Log "Failed to retrieve torrent status" "ERROR"
+    # Check for API failures (null means the API call failed, not that there are no torrents)
+    $brokenApiSuccess = ($brokenTorrents -is [Array])
+    $underRepairApiSuccess = ($underRepairTorrents -is [Array])
+    
+    # If BOTH API calls failed, that's an error
+    if (-not $brokenApiSuccess -and -not $underRepairApiSuccess) {
+        Write-Log "Failed to retrieve torrent status - API calls failed" "ERROR"
         $Script:Stats.TotalChecks++
         $Script:Stats.LastCheck = Get-Date
         return
+    }
+    
+    # If one API call failed but the other succeeded, log a warning but continue
+    if (-not $brokenApiSuccess) {
+        Write-Log "Warning: Failed to fetch broken torrents, but continuing with under repair check" "WARN"
+        $brokenTorrents = @()  # Treat as empty array to continue
+    }
+    
+    if (-not $underRepairApiSuccess) {
+        Write-Log "Warning: Failed to fetch under repair torrents, but continuing with broken check" "WARN"
+        $underRepairTorrents = @()  # Treat as empty array to continue
     }
     
     $Script:Stats.TotalChecks++
@@ -429,9 +445,14 @@ function Start-BrokenTorrentCheck {
     if (($null -eq $brokenTorrents -or $brokenTorrents.Count -eq 0) -and 
         ($null -eq $underRepairTorrents -or $underRepairTorrents.Count -eq 0)) {
         Write-Log "" "SUCCESS"
-        Write-Log "No broken or under repair torrents found - all good!" "SUCCESS"
+        Write-Log "✓ No broken or under repair torrents found - library is healthy!" "SUCCESS"
         Write-Log "Torrent status check completed" "INFO"
         Show-CheckSummary
+        
+        # Save current as previous for next check (even with no issues)
+        $Script:Stats.PreviousCheck.BrokenHashes = $Script:Stats.CurrentCheck.BrokenHashes
+        $Script:Stats.PreviousCheck.UnderRepairHashes = $Script:Stats.CurrentCheck.UnderRepairHashes
+        $Script:Stats.PreviousCheck.TriggeredHashes = @()
         return
     }
     
@@ -519,9 +540,9 @@ function Show-CheckSummary {
             [math]::Round(($Script:Stats.CurrentCheck.UnderRepairFound / $Script:Stats.CurrentCheck.TotalTorrents) * 100, 2)
         } else { 0 }
         
-        Write-Host "  OK Torrents:               $($Script:Stats.CurrentCheck.OkTorrents) ($okPercentage%)" -ForegroundColor Green
-        Write-Host "  Broken:                    $($Script:Stats.CurrentCheck.BrokenFound) ($brokenPercentage%)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.BrokenFound -gt 0) { "Yellow" } else { "Gray" })
-        Write-Host "  Under Repair:              $($Script:Stats.CurrentCheck.UnderRepairFound) ($repairPercentage%)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.UnderRepairFound -gt 0) { "Cyan" } else { "Gray" })
+        Write-Host ("  OK Torrents:               {0} ({1}%)" -f $Script:Stats.CurrentCheck.OkTorrents, $okPercentage) -ForegroundColor Green
+        Write-Host ("  Broken:                    {0} ({1}%)" -f $Script:Stats.CurrentCheck.BrokenFound, $brokenPercentage) -ForegroundColor $(if ($Script:Stats.CurrentCheck.BrokenFound -gt 0) { "Yellow" } else { "Gray" })
+        Write-Host ("  Under Repair:              {0} ({1}%)" -f $Script:Stats.CurrentCheck.UnderRepairFound, $repairPercentage) -ForegroundColor $(if ($Script:Stats.CurrentCheck.UnderRepairFound -gt 0) { "Cyan" } else { "Gray" })
         Write-Host ""
     }
     
@@ -602,7 +623,7 @@ function Show-CheckSummary {
         # Calculate success rate
         if ($Script:Stats.PreviousCheck.TriggeredHashes.Count -gt 0) {
             $successRate = [math]::Round(($repairedCount / $Script:Stats.PreviousCheck.TriggeredHashes.Count) * 100, 1)
-            Write-Host "  Repair Success Rate:       $successRate%" -ForegroundColor $(if ($successRate -ge 80) { "Green" } elseif ($successRate -ge 50) { "Yellow" } else { "Red" })
+            Write-Host ("  Repair Success Rate:       {0}%" -f $successRate) -ForegroundColor $(if ($successRate -ge 80) { "Green" } elseif ($successRate -ge 50) { "Yellow" } else { "Red" })
         }
     }
     
