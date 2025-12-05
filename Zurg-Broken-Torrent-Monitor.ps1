@@ -1,5 +1,5 @@
 # ============================================================================
-# Zurg Broken Torrent Monitor & Repair Tool v2.2.1
+# Zurg Broken Torrent Monitor & Repair Tool v2.3.0
 # ============================================================================
 
 [CmdletBinding()]
@@ -23,7 +23,10 @@ param(
     [switch]$RunOnce,
     
     [Parameter(Mandatory=$false)]
-    [switch]$VerboseLogging
+    [switch]$VerboseLogging,
+    
+    [Parameter(Mandatory=$false)]
+    [bool]$AutoRepair = $true
 )
 
 $ErrorActionPreference = "Continue"
@@ -31,7 +34,9 @@ $Script:Stats = @{
     TotalChecks = 0
     BrokenFound = 0
     UnderRepairFound = 0
+    UnrepairableFound = 0
     RepairsTriggered = 0
+    DeletionsTriggered = 0
     LastCheck = $null
     LastBrokenFound = $null
     CurrentCheck = @{
@@ -42,8 +47,6 @@ $Script:Stats = @{
         BrokenNames = @()
         UnderRepairHashes = @()
         UnderRepairNames = @()
-        TotalTorrents = 0
-        OkTorrents = 0
     }
     PreviousCheck = @{
         BrokenHashes = @()
@@ -252,54 +255,10 @@ function Get-ZurgTorrentsByState {
         }
         
         Write-Log "Successfully parsed $($torrents.Count) $stateName torrent(s)" "DEBUG"
-        return ,$torrents
+        return $torrents
     }
     catch {
         Write-Log "Error getting $stateName torrents: $($_.Exception.Message)" "ERROR"
-        Write-Log "Stack trace: $($_.ScriptStackTrace)" "DEBUG"
-        return $null
-    }
-}
-
-function Get-ZurgTotalTorrentStats {
-    try {
-        Write-Log "Fetching total torrent statistics..." "DEBUG"
-        $headers = Get-AuthHeaders
-        
-        $url = "$ZurgUrl/manage/"
-        Write-Log "Fetching: $url" "DEBUG"
-        
-        try {
-            $response = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 30 -ErrorAction Stop -UseBasicParsing
-            $content = $response.Content
-            
-            Write-Log "Successfully fetched torrents page (length: $($content.Length) bytes)" "DEBUG"
-        }
-        catch {
-            Write-Log "Failed to fetch torrents page: $($_.Exception.Message)" "ERROR"
-            return $null
-        }
-        
-        # Count total torrents by finding all unique data-hash attributes
-        $hashPattern = 'data-hash="([a-fA-F0-9]{40})"'
-        $hashMatches = [regex]::Matches($content, $hashPattern)
-        
-        # Use a hashtable to get unique hashes
-        $uniqueHashes = @{}
-        foreach ($match in $hashMatches) {
-            $hash = $match.Groups[1].Value.ToLower()
-            $uniqueHashes[$hash] = $true
-        }
-        
-        $totalTorrents = $uniqueHashes.Count
-        Write-Log "Found $totalTorrents total torrent(s)" "DEBUG"
-        
-        return @{
-            TotalTorrents = $totalTorrents
-        }
-    }
-    catch {
-        Write-Log "Error getting total torrent stats: $($_.Exception.Message)" "ERROR"
         Write-Log "Stack trace: $($_.ScriptStackTrace)" "DEBUG"
         return $null
     }
@@ -339,6 +298,427 @@ function Invoke-TorrentRepair {
     }
 }
 
+function Get-ZurgUnrepairableTorrents {
+    try {
+        Write-Log "Fetching unrepairable torrents from Zurg..." "DEBUG"
+        $headers = Get-AuthHeaders
+        
+        $url = "$ZurgUrl/manage/?state=status_cannot_repair"
+        Write-Log "Fetching: $url" "DEBUG"
+        
+        try {
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 30 -ErrorAction Stop -UseBasicParsing
+            $content = $response.Content
+            
+            Write-Log "Successfully fetched unrepairable torrents page (length: $($content.Length) bytes)" "DEBUG"
+        }
+        catch {
+            Write-Log "Failed to fetch unrepairable torrents page: $($_.Exception.Message)" "ERROR"
+            return $null
+        }
+        
+        $torrents = @()
+        $processedHashes = @{}
+        
+        # Look for table rows with torrent data
+        # Pattern: <tr class="torrent-row" data-hash="HASH" data-name="NAME" ...>
+        $rowPattern = '<tr[^>]*class="torrent-row"[^>]*data-hash="([a-fA-F0-9]{40})"[^>]*data-name="([^"]+)"[^>]*>'
+        $rowMatches = [regex]::Matches($content, $rowPattern)
+        
+        Write-Log "Found $($rowMatches.Count) unrepairable torrent row(s) using data-name pattern" "DEBUG"
+        
+        if ($rowMatches.Count -gt 0) {
+            foreach ($match in $rowMatches) {
+                $hash = $match.Groups[1].Value.ToLower()
+                $torrentName = [System.Web.HttpUtility]::HtmlDecode($match.Groups[2].Value.Trim())
+                
+                if ($processedHashes.ContainsKey($hash)) {
+                    continue
+                }
+                $processedHashes[$hash] = $true
+                
+                # Extract reason from state badge title
+                # Pattern: <span class="state-badge state-unrepairable" title="Unrepairable: REASON">
+                $contextStart = [Math]::Max(0, $match.Index)
+                $contextEnd = [Math]::Min($content.Length, $match.Index + 1000)
+                $context = $content.Substring($contextStart, $contextEnd - $contextStart)
+                
+                $reason = "Unknown reason"
+                $reasonPattern = 'title="Unrepairable:\s*([^"]+)"'
+                $reasonMatch = [regex]::Match($context, $reasonPattern)
+                if ($reasonMatch.Success) {
+                    $reason = $reasonMatch.Groups[1].Value.Trim()
+                }
+                
+                Write-Log "  Found unrepairable torrent: $torrentName - Reason: $reason" "DEBUG"
+                
+                $torrents += @{
+                    Hash = $hash
+                    Name = $torrentName
+                    Reason = $reason
+                    State = "cannot_repair"
+                }
+            }
+        }
+        else {
+            # Fallback: Try simple data-hash pattern for older Zurg versions
+            Write-Log "No torrent-row pattern found, trying fallback..." "DEBUG"
+            $hashPattern = 'data-hash="([a-fA-F0-9]{40})"'
+            $hashMatches = [regex]::Matches($content, $hashPattern)
+            
+            foreach ($match in $hashMatches) {
+                $hash = $match.Groups[1].Value.ToLower()
+                
+                if ($processedHashes.ContainsKey($hash)) {
+                    continue
+                }
+                $processedHashes[$hash] = $true
+                
+                $torrents += @{
+                    Hash = $hash
+                    Name = "Unknown ($hash)"
+                    Reason = "Unknown reason"
+                    State = "cannot_repair"
+                }
+            }
+        }
+        
+        Write-Log "Successfully parsed $($torrents.Count) unrepairable torrent(s)" "DEBUG"
+        return ,$torrents  # Comma preserves array
+    }
+    catch {
+        Write-Log "Error getting unrepairable torrents: $($_.Exception.Message)" "ERROR"
+        Write-Log "Stack trace: $($_.ScriptStackTrace)" "DEBUG"
+        return $null
+    }
+}
+
+function Invoke-TorrentDelete {
+    param(
+        [string]$Hash,
+        [string]$Name
+    )
+    
+    try {
+        Write-Log "Deleting torrent: $Name" "WARN"
+        $headers = Get-AuthHeaders
+        
+        $deleteUrl = "$ZurgUrl/manage/$Hash/delete"
+        Write-Log "  Delete URL: $deleteUrl" "DEBUG"
+        
+        try {
+            $response = Invoke-RestMethod -Uri $deleteUrl -Method Post -Headers $headers -TimeoutSec 30 -ErrorAction Stop
+            Write-Log "Successfully deleted torrent: $Name" "SUCCESS"
+            return $true
+        }
+        catch {
+            Write-Log "Failed to delete torrent $Name : $($_.Exception.Message)" "ERROR"
+            return $false
+        }
+    }
+    catch {
+        Write-Log "Exception deleting torrent: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Show-UnrepairableManagement {
+    param(
+        [array]$Torrents
+    )
+    
+    if ($null -eq $Torrents -or $Torrents.Count -eq 0) {
+        Write-Host "`nNo unrepairable torrents to manage." -ForegroundColor Green
+        return
+    }
+    
+    $selected = @{}
+    for ($i = 0; $i -lt $Torrents.Count; $i++) {
+        $selected[$i] = $false
+    }
+    
+    while ($true) {
+        Clear-Host
+        
+        Write-Host ""
+        Write-Host "======================================================================" -ForegroundColor Red
+        Write-Host "  UNREPAIRABLE TORRENT MANAGEMENT" -ForegroundColor Red
+        Write-Host "======================================================================" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "Found $($Torrents.Count) unrepairable torrent(s)" -ForegroundColor Yellow
+        Write-Host ""
+        
+        # Display torrents with selection checkboxes
+        for ($i = 0; $i -lt $Torrents.Count; $i++) {
+            $checkbox = if ($selected[$i]) { "[X]" } else { "[ ]" }
+            $number = ($i + 1).ToString().PadLeft(2)
+            
+            Write-Host "$number. $checkbox " -NoNewline
+            Write-Host $Torrents[$i]['Name'] -ForegroundColor Cyan
+            Write-Host "       Reason: " -NoNewline -ForegroundColor Gray
+            Write-Host $Torrents[$i]['Reason'] -ForegroundColor Yellow
+            Write-Host "       Hash: $($Torrents[$i]['Hash'])" -ForegroundColor DarkGray
+            Write-Host ""
+        }
+        
+        Write-Host "======================================================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Commands:" -ForegroundColor Yellow
+        Write-Host "  [#] [#-#] [#,#]  Toggle selection (single, range, or list)" -ForegroundColor White
+        Write-Host "  [A]          Select All" -ForegroundColor White
+        Write-Host "  [N]          Select None" -ForegroundColor White
+        Write-Host "  [R]          Repair selected torrents" -ForegroundColor Green
+        Write-Host "  [D]          Delete selected torrents" -ForegroundColor Red
+        Write-Host "  [Q]          Quit and return to monitoring" -ForegroundColor White
+        Write-Host ""
+        
+        $selectedCount = ($selected.Values | Where-Object { $_ -eq $true }).Count
+        Write-Host "Currently selected: $selectedCount torrent(s)" -ForegroundColor Cyan
+        Write-Host ""
+        
+        $input = Read-Host "Enter command"
+        $input = $input.Trim().ToUpper()
+        
+        # Handle number input
+        # Handle number input (supports ranges and comma-separated)
+        if ($input -match '^[\d,\-\s]+$') {
+            $numbersToToggle = @()
+            $hasError = $false
+            
+            # Split by commas
+            $parts = $input -split ','
+            
+            foreach ($part in $parts) {
+                $part = $part.Trim()
+                
+                # Check if it's a range (e.g., "1-10")
+                if ($part -match '^(\d+)-(\d+)$') {
+                    $start = [int]$Matches[1]
+                    $end = [int]$Matches[2]
+                    
+                    if ($start -gt $end) {
+                        Write-Host "Invalid range: $part (start must be <= end)" -ForegroundColor Red
+                        $hasError = $true
+                        break
+                    }
+                    
+                    for ($i = $start; $i -le $end; $i++) {
+                        if ($i -ge 1 -and $i -le $Torrents.Count) {
+                            $numbersToToggle += ($i - 1)
+                        }
+                        else {
+                            Write-Host "Invalid number in range: $i (valid: 1-$($Torrents.Count))" -ForegroundColor Red
+                            $hasError = $true
+                            break
+                        }
+                    }
+                }
+                # Single number
+                elseif ($part -match '^\d+$') {
+                    $num = [int]$part
+                    if ($num -ge 1 -and $num -le $Torrents.Count) {
+                        $numbersToToggle += ($num - 1)
+                    }
+                    else {
+                        Write-Host "Invalid number: $num (valid: 1-$($Torrents.Count))" -ForegroundColor Red
+                        $hasError = $true
+                        break
+                    }
+                }
+                else {
+                    Write-Host "Invalid format: $part" -ForegroundColor Red
+                    $hasError = $true
+                    break
+                }
+            }
+            
+            # Toggle all valid numbers if no errors
+            if (-not $hasError -and $numbersToToggle.Count -gt 0) {
+                foreach ($idx in $numbersToToggle) {
+                    $selected[$idx] = -not $selected[$idx]
+                }
+            }
+            elseif ($hasError) {
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            }
+        }
+        # Handle commands
+        elseif ($input -eq "A") {
+            for ($i = 0; $i -lt $Torrents.Count; $i++) {
+                $selected[$i] = $true
+            }
+        }
+        elseif ($input -eq "N") {
+            for ($i = 0; $i -lt $Torrents.Count; $i++) {
+                $selected[$i] = $false
+            }
+        }
+        elseif ($input -eq "R") {
+            $toRepair = @()
+            for ($i = 0; $i -lt $Torrents.Count; $i++) {
+                if ($selected[$i]) {
+                    $toRepair += $Torrents[$i]
+                }
+            }
+            
+            if ($toRepair.Count -eq 0) {
+                Write-Host "`nNo torrents selected. Press any key to continue..." -ForegroundColor Yellow
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                continue
+            }
+            
+            Write-Host "`n" -NoNewline
+            Write-Host "WARNING: " -ForegroundColor Red -NoNewline
+            Write-Host "About to trigger repair for $($toRepair.Count) torrent(s)."
+            $confirm = Read-Host "Are you sure? (yes/no)"
+            
+            if ($confirm.ToLower() -eq "yes") {
+                Write-Host "`nTriggering repairs..." -ForegroundColor Yellow
+                $successCount = 0
+                foreach ($torrent in $toRepair) {
+                    $success = Invoke-TorrentRepair -Hash $torrent['Hash'] -Name $torrent['Name']
+                    if ($success) {
+                        $successCount++
+                    }
+                    Start-Sleep -Milliseconds 500
+                }
+                # Update overall stats
+                $Script:Stats.RepairsTriggered += $successCount
+                
+                Write-Host "`nRepair triggered for $successCount / $($toRepair.Count) torrent(s)" -ForegroundColor Green
+                Write-Host "Press any key to continue..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                
+                # Prompt to continue or exit
+                Write-Host ""
+                Write-Host "Continue managing unrepairable torrents? (y/n): " -NoNewline -ForegroundColor Cyan
+                $continueChoice = Read-Host
+                if ($continueChoice.ToLower() -ne 'y') {
+                    return
+                }
+                
+                # Re-fetch unrepairable torrents
+                Write-Host "Refreshing unrepairable torrent list..." -ForegroundColor Yellow
+                $newTorrents = Get-ZurgUnrepairableTorrents
+                if ($null -eq $newTorrents -or $newTorrents.Count -eq 0) {
+                    Write-Host "No unrepairable torrents found." -ForegroundColor Green
+                    Write-Host "Press any key to return to monitoring..." -ForegroundColor Gray
+                    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    return
+                }
+                
+                # Rebuild torrents array
+                $Torrents = @()
+                foreach ($torrent in $newTorrents) {
+                    $Torrents += @{
+                        Hash = $torrent['Hash']
+                        Name = $torrent['Name']
+                        Reason = $torrent['Reason']
+                        State = "cannot_repair"
+                    }
+                }
+                
+                # Reset selection
+                $selected = @{}
+                for ($i = 0; $i -lt $Torrents.Count; $i++) {
+                    $selected[$i] = $false
+                }
+                continue
+            }
+        }
+        elseif ($input -eq "D") {
+            $toDelete = @()
+            for ($i = 0; $i -lt $Torrents.Count; $i++) {
+                if ($selected[$i]) {
+                    $toDelete += $Torrents[$i]
+                }
+            }
+            
+            if ($toDelete.Count -eq 0) {
+                Write-Host "`nNo torrents selected. Press any key to continue..." -ForegroundColor Yellow
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                continue
+            }
+            
+            Write-Host "`n" -NoNewline
+            Write-Host "DANGER: " -ForegroundColor Red -NoNewline
+            Write-Host "About to DELETE $($toDelete.Count) torrent(s). This cannot be undone!"
+            Write-Host "`nTorrents to be deleted:" -ForegroundColor Red
+            foreach ($t in $toDelete) {
+                Write-Host "  - $($t.Name)" -ForegroundColor Yellow
+            }
+            Write-Host ""
+            $confirm = Read-Host "Type 'DELETE' to confirm"
+            
+            if ($confirm -eq "DELETE") {
+                Write-Host "`nDeleting torrents..." -ForegroundColor Red
+                $successCount = 0
+                foreach ($torrent in $toDelete) {
+                    $success = Invoke-TorrentDelete -Hash $torrent['Hash'] -Name $torrent['Name']
+                    if ($success) {
+                        $successCount++
+                    }
+                    Start-Sleep -Milliseconds 500
+                }
+                # Update overall stats
+                $Script:Stats.DeletionsTriggered += $successCount
+                
+                Write-Host "`nDeleted $successCount / $($toDelete.Count) torrent(s)" -ForegroundColor Green
+                Write-Host "Press any key to continue..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                
+                # Prompt to continue or exit
+                Write-Host ""
+                Write-Host "Continue managing unrepairable torrents? (y/n): " -NoNewline -ForegroundColor Cyan
+                $continueChoice = Read-Host
+                if ($continueChoice.ToLower() -ne 'y') {
+                    return
+                }
+                
+                # Re-fetch unrepairable torrents
+                Write-Host "Refreshing unrepairable torrent list..." -ForegroundColor Yellow
+                $newTorrents = Get-ZurgUnrepairableTorrents
+                if ($null -eq $newTorrents -or $newTorrents.Count -eq 0) {
+                    Write-Host "No unrepairable torrents found." -ForegroundColor Green
+                    Write-Host "Press any key to return to monitoring..." -ForegroundColor Gray
+                    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    return
+                }
+                
+                # Rebuild torrents array
+                $Torrents = @()
+                foreach ($torrent in $newTorrents) {
+                    $Torrents += @{
+                        Hash = $torrent['Hash']
+                        Name = $torrent['Name']
+                        Reason = $torrent['Reason']
+                        State = "cannot_repair"
+                    }
+                }
+                
+                # Reset selection
+                $selected = @{}
+                for ($i = 0; $i -lt $Torrents.Count; $i++) {
+                    $selected[$i] = $false
+                }
+                continue
+            }
+            else {
+                Write-Host "`nDeletion cancelled." -ForegroundColor Yellow
+                Write-Host "Press any key to continue..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            }
+        }
+        elseif ($input -eq "Q") {
+            return
+        }
+        else {
+            Write-Host "Invalid command. Press any key to continue..." -ForegroundColor Red
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        }
+    }
+}
+
 function Start-BrokenTorrentCheck {
     Write-Log "" "INFO"
     Write-Log "Starting torrent status check..." "INFO"
@@ -351,14 +731,10 @@ function Start-BrokenTorrentCheck {
         BrokenNames = @()
         UnderRepairHashes = @()
         UnderRepairNames = @()
-        TotalTorrents = 0
-        OkTorrents = 0
-    }
-    
-    # Get total torrent statistics
-    $totalStats = Get-ZurgTotalTorrentStats
-    if ($null -ne $totalStats) {
-        $Script:Stats.CurrentCheck.TotalTorrents = $totalStats.TotalTorrents
+        UnrepairableFound = 0
+        UnrepairableHashes = @()
+        UnrepairableNames = @()
+        UnrepairableReasons = @()
     }
     
     # Get broken torrents
@@ -367,27 +743,14 @@ function Start-BrokenTorrentCheck {
     # Get under repair torrents
     $underRepairTorrents = Get-ZurgTorrentsByState -State "status_under_repair"
     
-    # Check for API failures (null means the API call failed, not that there are no torrents)
-    $brokenApiSuccess = ($brokenTorrents -is [Array])
-    $underRepairApiSuccess = ($underRepairTorrents -is [Array])
+    # Get unrepairable torrents
+    $unrepairableTorrents = Get-ZurgUnrepairableTorrents
     
-    # If BOTH API calls failed, that's an error
-    if (-not $brokenApiSuccess -and -not $underRepairApiSuccess) {
-        Write-Log "Failed to retrieve torrent status - API calls failed" "ERROR"
+    if ($null -eq $brokenTorrents -and $null -eq $underRepairTorrents -and $null -eq $unrepairableTorrents) {
+        Write-Log "Failed to retrieve torrent status" "ERROR"
         $Script:Stats.TotalChecks++
         $Script:Stats.LastCheck = Get-Date
         return
-    }
-    
-    # If one API call failed but the other succeeded, log a warning but continue
-    if (-not $brokenApiSuccess) {
-        Write-Log "Warning: Failed to fetch broken torrents, but continuing with under repair check" "WARN"
-        $brokenTorrents = @()  # Treat as empty array to continue
-    }
-    
-    if (-not $underRepairApiSuccess) {
-        Write-Log "Warning: Failed to fetch under repair torrents, but continuing with broken check" "WARN"
-        $underRepairTorrents = @()  # Treat as empty array to continue
     }
     
     $Script:Stats.TotalChecks++
@@ -409,24 +772,25 @@ function Start-BrokenTorrentCheck {
         $Script:Stats.UnderRepairFound += $underRepairTorrents.Count
     }
     
-    # Calculate OK torrents
-    if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
-        $Script:Stats.CurrentCheck.OkTorrents = $Script:Stats.CurrentCheck.TotalTorrents - 
-                                                 $Script:Stats.CurrentCheck.BrokenFound - 
-                                                 $Script:Stats.CurrentCheck.UnderRepairFound
+    
+    # Process unrepairable torrents
+    if ($null -ne $unrepairableTorrents) {
+        $Script:Stats.CurrentCheck.UnrepairableFound = $unrepairableTorrents.Count
+        $Script:Stats.UnrepairableFound += $unrepairableTorrents.Count
     }
     
     Write-Log "Found $($Script:Stats.CurrentCheck.BrokenFound) broken torrent(s)" "INFO"
     Write-Log "Found $($Script:Stats.CurrentCheck.UnderRepairFound) under repair torrent(s)" "INFO"
+    Write-Log "Found $($Script:Stats.CurrentCheck.UnrepairableFound) unrepairable torrent(s)" "INFO"
     
     # Display broken torrents
     if ($null -ne $brokenTorrents -and $brokenTorrents.Count -gt 0) {
         Write-Log "" "INFO"
         Write-Log "BROKEN TORRENTS:" "WARN"
         foreach ($torrent in $brokenTorrents) {
-            Write-Log "  - $($torrent.Name)" "WARN"
-            $Script:Stats.CurrentCheck.BrokenHashes += $torrent.Hash
-            $Script:Stats.CurrentCheck.BrokenNames += $torrent.Name
+            Write-Log "  - $($torrent['Name'])" "WARN"
+            $Script:Stats.CurrentCheck.BrokenHashes += $torrent['Hash']
+            $Script:Stats.CurrentCheck.BrokenNames += $torrent['Name']
         }
     }
     
@@ -435,9 +799,22 @@ function Start-BrokenTorrentCheck {
         Write-Log "" "INFO"
         Write-Log "UNDER REPAIR:" "INFO"
         foreach ($torrent in $underRepairTorrents) {
-            Write-Log "  - $($torrent.Name)" "INFO"
-            $Script:Stats.CurrentCheck.UnderRepairHashes += $torrent.Hash
-            $Script:Stats.CurrentCheck.UnderRepairNames += $torrent.Name
+            Write-Log "  - $($torrent['Name'])" "INFO"
+            $Script:Stats.CurrentCheck.UnderRepairHashes += $torrent['Hash']
+            $Script:Stats.CurrentCheck.UnderRepairNames += $torrent['Name']
+        }
+    }
+    
+    # Display unrepairable torrents
+    if ($null -ne $unrepairableTorrents -and $unrepairableTorrents.Count -gt 0) {
+        Write-Log "" "INFO"
+        Write-Log "UNREPAIRABLE TORRENTS:" "WARN"
+        foreach ($torrent in $unrepairableTorrents) {
+            Write-Log "  - $($torrent['Name'])" "WARN"
+            Write-Log "    Reason: $($torrent['Reason'])" "WARN"
+            $Script:Stats.CurrentCheck.UnrepairableHashes += $torrent['Hash']
+            $Script:Stats.CurrentCheck.UnrepairableNames += $torrent['Name']
+            $Script:Stats.CurrentCheck.UnrepairableReasons += $torrent['Reason']
         }
     }
     
@@ -445,40 +822,43 @@ function Start-BrokenTorrentCheck {
     if (($null -eq $brokenTorrents -or $brokenTorrents.Count -eq 0) -and 
         ($null -eq $underRepairTorrents -or $underRepairTorrents.Count -eq 0)) {
         Write-Log "" "SUCCESS"
-        Write-Log "✓ No broken or under repair torrents found - library is healthy!" "SUCCESS"
-        Write-Log "Torrent status check completed" "INFO"
-        Show-CheckSummary
-        
-        # Save current as previous for next check (even with no issues)
-        $Script:Stats.PreviousCheck.BrokenHashes = $Script:Stats.CurrentCheck.BrokenHashes
-        $Script:Stats.PreviousCheck.UnderRepairHashes = $Script:Stats.CurrentCheck.UnderRepairHashes
-        $Script:Stats.PreviousCheck.TriggeredHashes = @()
-        return
+        Write-Log "No broken or under repair torrents found - all good!" "SUCCESS"
     }
     
     Write-Log "" "INFO"
-    Write-Log "Triggering repairs..." "INFO"
+    if ($AutoRepair) {
+        Write-Log "" "INFO"
+        Write-Log "Triggering repairs..." "INFO"
+    } else {
+        Write-Log "" "INFO"
+        Write-Log "Auto-repair disabled - monitoring only mode" "INFO"
+    }
     
     # Trigger repair for broken torrents
     if ($null -ne $brokenTorrents -and $brokenTorrents.Count -gt 0) {
+    if ($AutoRepair) {
         foreach ($torrent in $brokenTorrents) {
-            $success = Invoke-TorrentRepair -Hash $torrent.Hash -Name $torrent.Name
+            $success = Invoke-TorrentRepair -Hash $torrent['Hash'] -Name $torrent['Name']
             
             if ($success) {
                 $Script:Stats.CurrentCheck.RepairsTriggered++
                 $Script:Stats.RepairsTriggered++
             }
+    } else {
+        Write-Log "Skipping broken torrent repairs (monitoring only mode)" "INFO"
+    }
             
             Start-Sleep -Milliseconds 500
         }
     }
     
     # Trigger repair for under repair torrents (re-trigger to help them along)
+    if ($AutoRepair) {
     if ($null -ne $underRepairTorrents -and $underRepairTorrents.Count -gt 0) {
         Write-Log "" "INFO"
         Write-Log "Re-triggering repairs for under repair torrents..." "INFO"
         foreach ($torrent in $underRepairTorrents) {
-            $success = Invoke-TorrentRepair -Hash $torrent.Hash -Name $torrent.Name
+            $success = Invoke-TorrentRepair -Hash $torrent['Hash'] -Name $torrent['Name']
             
             if ($success) {
                 $Script:Stats.CurrentCheck.RepairsTriggered++
@@ -487,6 +867,9 @@ function Start-BrokenTorrentCheck {
             
             Start-Sleep -Milliseconds 500
         }
+    }
+    } else {
+        Write-Log "Skipping under-repair torrent re-triggers (monitoring only mode)" "INFO"
     }
     
     Write-Log "" "INFO"
@@ -510,7 +893,9 @@ function Show-Statistics {
     Write-Host "Total Checks Performed:    $($Script:Stats.TotalChecks)" -ForegroundColor Cyan
     Write-Host "Total Broken Found:        $($Script:Stats.BrokenFound)" -ForegroundColor Cyan
     Write-Host "Total Under Repair Found:  $($Script:Stats.UnderRepairFound)" -ForegroundColor Cyan
+    Write-Host "Total Unrepairable Found:  $($Script:Stats.UnrepairableFound)" -ForegroundColor Cyan
     Write-Host "Total Repairs Triggered:   $($Script:Stats.RepairsTriggered)" -ForegroundColor Cyan
+    Write-Host "Total Deletions Triggered: $($Script:Stats.DeletionsTriggered)" -ForegroundColor Cyan
     Write-Host "Last Check:                $lastCheck" -ForegroundColor Cyan
     Write-Host "Last Broken Found:         $lastBroken" -ForegroundColor Cyan
 }
@@ -521,31 +906,6 @@ function Show-CheckSummary {
     Write-Host "  CHECK SUMMARY" -ForegroundColor Cyan
     Write-Host "======================================================================" -ForegroundColor Cyan
     Write-Host ""
-    
-    # Display total torrent statistics if available
-    if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
-        Write-Host "TORRENT STATISTICS:" -ForegroundColor Magenta
-        Write-Host "  Total Torrents:            $($Script:Stats.CurrentCheck.TotalTorrents)" -ForegroundColor White
-        
-        # Calculate percentages
-        $okPercentage = if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
-            [math]::Round(($Script:Stats.CurrentCheck.OkTorrents / $Script:Stats.CurrentCheck.TotalTorrents) * 100, 2)
-        } else { 0 }
-        
-        $brokenPercentage = if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
-            [math]::Round(($Script:Stats.CurrentCheck.BrokenFound / $Script:Stats.CurrentCheck.TotalTorrents) * 100, 2)
-        } else { 0 }
-        
-        $repairPercentage = if ($Script:Stats.CurrentCheck.TotalTorrents -gt 0) {
-            [math]::Round(($Script:Stats.CurrentCheck.UnderRepairFound / $Script:Stats.CurrentCheck.TotalTorrents) * 100, 2)
-        } else { 0 }
-        
-        Write-Host ("  OK Torrents:               {0} ({1}%)" -f $Script:Stats.CurrentCheck.OkTorrents, $okPercentage) -ForegroundColor Green
-        Write-Host ("  Broken:                    {0} ({1}%)" -f $Script:Stats.CurrentCheck.BrokenFound, $brokenPercentage) -ForegroundColor $(if ($Script:Stats.CurrentCheck.BrokenFound -gt 0) { "Yellow" } else { "Gray" })
-        Write-Host ("  Under Repair:              {0} ({1}%)" -f $Script:Stats.CurrentCheck.UnderRepairFound, $repairPercentage) -ForegroundColor $(if ($Script:Stats.CurrentCheck.UnderRepairFound -gt 0) { "Cyan" } else { "Gray" })
-        Write-Host ""
-    }
-    
     Write-Host "CURRENT CHECK RESULTS:" -ForegroundColor Yellow
     Write-Host "  Broken Torrents:           $($Script:Stats.CurrentCheck.BrokenFound)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.BrokenFound -gt 0) { "Yellow" } else { "Green" })
     Write-Host "  Under Repair:              $($Script:Stats.CurrentCheck.UnderRepairFound)" -ForegroundColor $(if ($Script:Stats.CurrentCheck.UnderRepairFound -gt 0) { "Cyan" } else { "Gray" })
@@ -564,6 +924,35 @@ function Show-CheckSummary {
         Write-Host "  Under Repair:" -ForegroundColor Cyan
         foreach ($name in $Script:Stats.CurrentCheck.UnderRepairNames) {
             Write-Host "    - $name" -ForegroundColor Cyan
+        }
+    }
+    
+    # Display unrepairable torrents
+    if ($Script:Stats.CurrentCheck.UnrepairableFound -gt 0) {
+        Write-Host "" 
+        Write-Host "  Unrepairable Torrents:     $($Script:Stats.CurrentCheck.UnrepairableFound)" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Cannot Repair:" -ForegroundColor Red
+        for ($i = 0; $i -lt $Script:Stats.CurrentCheck.UnrepairableNames.Count; $i++) {
+            Write-Host "    - $($Script:Stats.CurrentCheck.UnrepairableNames[$i])" -ForegroundColor Yellow
+            Write-Host "      Reason: $($Script:Stats.CurrentCheck.UnrepairableReasons[$i])" -ForegroundColor DarkYellow
+        }
+        Write-Host ""
+        Write-Host "  Press 'M' to enter Management mode, or any other key to continue..." -ForegroundColor Cyan
+        
+        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        if ($key.Character -eq 'M' -or $key.Character -eq 'm') {
+            # Build torrents array for management
+            $torrentsToManage = @()
+            for ($i = 0; $i -lt $Script:Stats.CurrentCheck.UnrepairableHashes.Count; $i++) {
+                $torrentsToManage += @{
+                    Hash = $Script:Stats.CurrentCheck.UnrepairableHashes[$i]
+                    Name = $Script:Stats.CurrentCheck.UnrepairableNames[$i]
+                    Reason = $Script:Stats.CurrentCheck.UnrepairableReasons[$i]
+                    State = "cannot_repair"
+                }
+            }
+            Show-UnrepairableManagement -Torrents $torrentsToManage
         }
     }
     
@@ -623,7 +1012,7 @@ function Show-CheckSummary {
         # Calculate success rate
         if ($Script:Stats.PreviousCheck.TriggeredHashes.Count -gt 0) {
             $successRate = [math]::Round(($repairedCount / $Script:Stats.PreviousCheck.TriggeredHashes.Count) * 100, 1)
-            Write-Host ("  Repair Success Rate:       {0}%" -f $successRate) -ForegroundColor $(if ($successRate -ge 80) { "Green" } elseif ($successRate -ge 50) { "Yellow" } else { "Red" })
+            Write-Host "  Repair Success Rate:       $successRate%" -ForegroundColor $(if ($successRate -ge 80) { "Green" } elseif ($successRate -ge 50) { "Yellow" } else { "Red" })
         }
     }
     
@@ -633,13 +1022,15 @@ function Show-CheckSummary {
 }
 
 function Start-MonitoringLoop {
-    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.2.1"
+    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.3.0"
     
     Write-Log "Starting Zurg Broken Torrent Monitor" "INFO"
     Write-Log "Zurg URL: $ZurgUrl" "INFO"
     Write-Log "Check Interval: $CheckIntervalMinutes minutes" "INFO"
     Write-Log "Log File: $LogFile" "INFO"
     Write-Log "Authentication: $(if ($Username) { 'Enabled' } else { 'Disabled' })" "INFO"
+    $repairMode = if (-not $AutoRepair) { "Disabled (Monitoring Only)" } else { "Enabled" }
+    Write-Log "Auto-Repair: $repairMode" "INFO"
     Write-Log "" "INFO"
     
     if (-not (Test-ZurgConnection)) {
