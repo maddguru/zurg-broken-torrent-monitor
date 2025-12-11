@@ -1,5 +1,12 @@
 # ============================================================================
-# Zurg Broken Torrent Monitor & Repair Tool v2.3.0
+# Zurg Broken Torrent Monitor & Repair Tool v2.4.0
+# ============================================================================
+# New in v2.4.0:
+#   - Unified Management UI for ALL torrent types (Broken, Under Repair, Unrepairable)
+#   - Search/Filter by name, state, or reason
+#   - Bulk actions by reason (select all matching)
+#   - Toggle AutoRepair on/off from within Management UI
+#   - Statistics tracking for all manual actions
 # ============================================================================
 
 [CmdletBinding()]
@@ -1022,7 +1029,7 @@ function Show-CheckSummary {
 }
 
 function Start-MonitoringLoop {
-    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.3.0"
+    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.4.0"
     
     Write-Log "Starting Zurg Broken Torrent Monitor" "INFO"
     Write-Log "Zurg URL: $ZurgUrl" "INFO"
