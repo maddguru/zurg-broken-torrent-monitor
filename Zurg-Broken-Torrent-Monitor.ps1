@@ -1,12 +1,16 @@
 # ============================================================================
-# Zurg Broken Torrent Monitor & Repair Tool v2.4.0
+# Zurg Broken Torrent Monitor & Repair Tool v2.5.2
 # ============================================================================
-# New in v2.4.0:
-#   - Unified Management UI for ALL torrent types (Broken, Under Repair, Unrepairable)
-#   - Search/Filter by name, state, or reason
-#   - Bulk actions by reason (select all matching)
-#   - Toggle AutoRepair on/off from within Management UI
-#   - Statistics tracking for all manual actions
+# New in v2.5.2:
+#   - Verification runs ONLY on startup (if enabled) - not every cycle
+#   - Manual verification available anytime via V key
+#   - Toggle settings are SAVED and persist between restarts
+#   - Settings stored in zurg-monitor-settings.json
+#
+# Previous in v2.5.1:
+#   - FIXED: Verification logic correctly parses Zurg's State/File States
+#   - Live progress timer during verification
+#   - Countdown timer showing time until next check
 # ============================================================================
 
 [CmdletBinding()]
@@ -27,19 +31,138 @@ param(
     [string]$LogFile = "zurg-broken-torrent-monitor.log",
     
     [Parameter(Mandatory=$false)]
+    [string]$SettingsFile = "zurg-monitor-settings.json",
+    
+    [Parameter(Mandatory=$false)]
     [switch]$RunOnce,
     
     [Parameter(Mandatory=$false)]
     [switch]$VerboseLogging,
     
     [Parameter(Mandatory=$false)]
-    [bool]$AutoRepair = $false
+    [switch]$SkipStartupVerification,  # Skip verification even if enabled
+    
+    [Parameter(Mandatory=$false)]
+    [int]$VerifyDelayMs = 50  # Delay between verifications to avoid overwhelming server
 )
 
 $ErrorActionPreference = "Continue"
 
-# Make AutoRepair a script-level variable so it can be toggled at runtime
-$Script:AutoRepairEnabled = $AutoRepair
+# Script-level settings (will be loaded from file or use defaults)
+$Script:AutoRepairEnabled = $false
+$Script:AutoVerifyEnabled = $false  # Verification on startup if enabled
+$Script:SettingsLoaded = $false
+
+# ============================================================================
+# SETTINGS PERSISTENCE FUNCTIONS
+# ============================================================================
+
+function Get-SettingsPath {
+    # Store settings in same directory as the script/log file
+    $scriptDir = Split-Path -Parent $MyInvocation.ScriptName
+    if ([string]::IsNullOrEmpty($scriptDir)) {
+        $scriptDir = Get-Location
+    }
+    return Join-Path $scriptDir $SettingsFile
+}
+
+function Load-Settings {
+    $settingsPath = Get-SettingsPath
+    
+    if (Test-Path $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            
+            $Script:AutoRepairEnabled = [bool]$settings.AutoRepair
+            $Script:AutoVerifyEnabled = [bool]$settings.AutoVerify
+            $Script:SettingsLoaded = $true
+            
+            Write-Log "Loaded settings from $settingsPath" "DEBUG"
+            Write-Log "  AutoRepair: $($Script:AutoRepairEnabled)" "DEBUG"
+            Write-Log "  AutoVerify: $($Script:AutoVerifyEnabled)" "DEBUG"
+            
+            return $true
+        }
+        catch {
+            Write-Log "Failed to load settings: $($_.Exception.Message)" "WARN"
+            return $false
+        }
+    }
+    else {
+        Write-Log "No settings file found, using defaults" "DEBUG"
+        return $false
+    }
+}
+
+function Save-Settings {
+    $settingsPath = Get-SettingsPath
+    
+    try {
+        $settings = @{
+            AutoRepair = $Script:AutoRepairEnabled
+            AutoVerify = $Script:AutoVerifyEnabled
+            LastModified = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        }
+        
+        $settings | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
+        
+        Write-Log "Settings saved to $settingsPath" "DEBUG"
+        return $true
+    }
+    catch {
+        Write-Log "Failed to save settings: $($_.Exception.Message)" "WARN"
+        return $false
+    }
+}
+
+# ============================================================================
+# MEMORY MANAGEMENT FUNCTIONS
+# ============================================================================
+
+function Invoke-MemoryCleanup {
+    param(
+        [switch]$Force,
+        [switch]$Silent
+    )
+    
+    # Get memory before cleanup
+    $memBefore = [System.GC]::GetTotalMemory($false) / 1MB
+    
+    # Clear any large temporary variables in the current scope
+    # Force garbage collection
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+    [System.GC]::Collect()
+    
+    # Get memory after cleanup
+    $memAfter = [System.GC]::GetTotalMemory($true) / 1MB
+    $freed = $memBefore - $memAfter
+    
+    if (-not $Silent -and $freed -gt 1) {
+        Write-Log "Memory cleanup: freed $([math]::Round($freed, 2)) MB (now using $([math]::Round($memAfter, 2)) MB)" "DEBUG"
+    }
+    
+    return @{
+        Before = [math]::Round($memBefore, 2)
+        After = [math]::Round($memAfter, 2)
+        Freed = [math]::Round($freed, 2)
+    }
+}
+
+function Get-MemoryUsage {
+    $memMB = [System.GC]::GetTotalMemory($false) / 1MB
+    return [math]::Round($memMB, 2)
+}
+
+function Clear-OldMismatches {
+    # Limit the number of stored mismatches to prevent memory bloat
+    $maxMismatches = 100
+    
+    if ($Script:Stats.CurrentMismatches.Count -gt $maxMismatches) {
+        Write-Log "Trimming mismatch list from $($Script:Stats.CurrentMismatches.Count) to $maxMismatches" "DEBUG"
+        $Script:Stats.CurrentMismatches = $Script:Stats.CurrentMismatches | Select-Object -First $maxMismatches
+    }
+}
 
 $Script:Stats = @{
     TotalChecks = 0
@@ -50,6 +173,13 @@ $Script:Stats = @{
     DeletionsTriggered = 0
     LastCheck = $null
     LastBrokenFound = $null
+    # Verification stats
+    TotalVerifications = 0
+    TorrentsVerified = 0
+    MismatchesFound = 0
+    MismatchesCorrected = 0
+    LastVerification = $null
+    CurrentMismatches = @()  # Currently known mismatches
     CurrentCheck = @{
         BrokenFound = 0
         UnderRepairFound = 0
@@ -62,6 +192,9 @@ $Script:Stats = @{
         UnrepairableHashes = @()
         UnrepairableNames = @()
         UnrepairableReasons = @()
+        # Verification results
+        VerifiedCount = 0
+        MismatchCount = 0
     }
     PreviousCheck = @{
         BrokenHashes = @()
@@ -113,6 +246,25 @@ function Write-Banner {
     Add-Content -Path $LogFile -Value ""
 }
 
+function Format-TimeSpan {
+    param([TimeSpan]$TimeSpan)
+    
+    # Handle negative or zero timespan
+    if ($TimeSpan.TotalSeconds -le 0) {
+        return "0s"
+    }
+    
+    if ($TimeSpan.TotalHours -ge 1) {
+        return "{0:0}h {1:0}m {2:0}s" -f [math]::Floor($TimeSpan.TotalHours), $TimeSpan.Minutes, $TimeSpan.Seconds
+    }
+    elseif ($TimeSpan.TotalMinutes -ge 1) {
+        return "{0:0}m {1:0}s" -f [math]::Floor($TimeSpan.TotalMinutes), $TimeSpan.Seconds
+    }
+    else {
+        return "{0:0}s" -f [math]::Floor($TimeSpan.TotalSeconds)
+    }
+}
+
 # ============================================================================
 # CONNECTION & AUTH FUNCTIONS
 # ============================================================================
@@ -151,25 +303,46 @@ function Test-ZurgConnection {
 function Get-ZurgTorrentsByState {
     param(
         [Parameter(Mandatory=$true)]
-        [ValidateSet("status_broken", "status_under_repair")]
+        [ValidateSet("status_broken", "status_under_repair", "status_ok")]
         [string]$State
     )
     
     try {
-        $stateName = if ($State -eq "status_broken") { "broken" } else { "under repair" }
+        $stateName = switch ($State) {
+            "status_broken" { "broken" }
+            "status_under_repair" { "under repair" }
+            "status_ok" { "OK" }
+        }
         Write-Log "Fetching $stateName torrents from Zurg..." "DEBUG"
         $headers = Get-AuthHeaders
         
         $url = "$ZurgUrl/manage/?state=$State"
         Write-Log "Fetching: $url" "DEBUG"
         
+        # Show spinner for OK torrents since they can be numerous
+        $showSpinner = ($State -eq "status_ok")
+        
         try {
-            $response = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 30 -ErrorAction Stop -UseBasicParsing
+            if ($showSpinner) {
+                Write-Host "    Downloading torrent list from Zurg..." -NoNewline -ForegroundColor Gray
+                [Console]::Out.Flush()
+            }
+            
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 60 -ErrorAction Stop -UseBasicParsing
             $content = $response.Content
+            
+            if ($showSpinner) {
+                Write-Host " Done! ($([math]::Round($content.Length / 1024))KB)" -ForegroundColor Gray
+                Write-Host "    Parsing torrent data..." -NoNewline -ForegroundColor Gray
+                [Console]::Out.Flush()
+            }
             
             Write-Log "Successfully fetched $stateName torrents page (length: $($content.Length) bytes)" "DEBUG"
         }
         catch {
+            if ($showSpinner) {
+                Write-Host " Failed!" -ForegroundColor Red
+            }
             Write-Log "Failed to fetch $stateName torrents page: $($_.Exception.Message)" "ERROR"
             return $null
         }
@@ -221,12 +394,19 @@ function Get-ZurgTorrentsByState {
                 
                 Write-Log "  Found $stateName torrent: $torrentName" "DEBUG"
                 
+                $typeLabel = switch ($State) {
+                    "status_broken" { "Broken" }
+                    "status_under_repair" { "Under Repair" }
+                    "status_ok" { "OK" }
+                }
+                
                 $torrents += @{
                     Hash = $hash
                     Name = $torrentName
                     State = $State
-                    Type = if ($State -eq "status_broken") { "Broken" } else { "Under Repair" }
+                    Type = $typeLabel
                     Reason = ""
+                    ReportedStatus = $typeLabel
                 }
             }
         }
@@ -275,17 +455,29 @@ function Get-ZurgTorrentsByState {
                 
                 Write-Log "  Found $stateName torrent: $torrentName" "DEBUG"
                 
+                $typeLabel = switch ($State) {
+                    "status_broken" { "Broken" }
+                    "status_under_repair" { "Under Repair" }
+                    "status_ok" { "OK" }
+                }
+                
                 $torrents += @{
                     Hash = $hash
                     Name = $torrentName
                     State = $State
-                    Type = if ($State -eq "status_broken") { "Broken" } else { "Under Repair" }
+                    Type = $typeLabel
                     Reason = ""
+                    ReportedStatus = $typeLabel
                 }
             }
         }
         
         Write-Log "Successfully parsed $($torrents.Count) $stateName torrent(s)" "DEBUG"
+        
+        if ($showSpinner) {
+            Write-Host " Found $($torrents.Count) torrents" -ForegroundColor Gray
+        }
+        
         return $torrents
     }
     catch {
@@ -353,6 +545,7 @@ function Get-ZurgUnrepairableTorrents {
                     Reason = $reason
                     State = "status_cannot_repair"
                     Type = "Unrepairable"
+                    ReportedStatus = "Unrepairable"
                 }
             }
         }
@@ -376,6 +569,7 @@ function Get-ZurgUnrepairableTorrents {
                     Reason = "Unknown reason"
                     State = "status_cannot_repair"
                     Type = "Unrepairable"
+                    ReportedStatus = "Unrepairable"
                 }
             }
         }
@@ -387,6 +581,346 @@ function Get-ZurgUnrepairableTorrents {
         Write-Log "Error getting unrepairable torrents: $($_.Exception.Message)" "ERROR"
         Write-Log "Stack trace: $($_.ScriptStackTrace)" "DEBUG"
         return $null
+    }
+}
+
+# ============================================================================
+# HEALTH VERIFICATION FUNCTIONS (v2.5.1 - CORRECTED LOGIC)
+# ============================================================================
+
+function Get-TorrentHealthStatus {
+    param(
+        [string]$Hash,
+        [string]$Name
+    )
+    
+    <#
+    .SYNOPSIS
+    Check a torrent's actual health status from Zurg's detail page.
+    
+    .DESCRIPTION
+    Parses the torrent detail page to find:
+    - State: Should be 'Active' for healthy torrents (in badge after info-label)
+    - File States: Should be 'OK: X' where X is number of OK files (in badge)
+    
+    Zurg HTML structure (from debug):
+      <td class="info-label">State</td> ... <span class="badge ">Active</span>
+      <td class="info-label">File States</td> ... <span class="badge">OK: 1</span>
+    
+    A mismatch occurs when:
+    - State badge is NOT 'Active'
+    - File States badge does NOT start with 'OK:'
+    #>
+    
+    try {
+        $headers = Get-AuthHeaders
+        $url = "$ZurgUrl/manage/$Hash/"
+        
+        $response = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 15 -ErrorAction Stop -UseBasicParsing
+        $content = $response.Content
+        
+        # Initialize result
+        $result = @{
+            IsHealthy = $true
+            TorrentState = "Unknown"
+            FileState = "Unknown"
+            Reason = ""
+        }
+        
+        # ================================================================
+        # PATTERN 1: Find State value
+        # Look for: info-label">State</td> ... <span class="badge ...">VALUE</span>
+        # ================================================================
+        
+        # Find the State label position
+        $stateLabel = 'info-label">State</td>'
+        $stateLabelIndex = $content.IndexOf($stateLabel)
+        
+        if ($stateLabelIndex -gt 0) {
+            # Look for the next badge after the State label (within 500 chars)
+            $stateSection = $content.Substring($stateLabelIndex, [Math]::Min(500, $content.Length - $stateLabelIndex))
+            
+            # Pattern: <span class="badge ...">VALUE</span>
+            if ($stateSection -match '<span\s+class="badge[^"]*">([^<]+)</span>') {
+                $result.TorrentState = $Matches[1].Trim()
+            }
+        }
+        
+        # ================================================================
+        # PATTERN 2: Find File States value
+        # Look for: info-label">File States</td> ... <span class="badge">OK: 1</span>
+        # ================================================================
+        
+        # Find the File States label position
+        $fileStatesLabel = 'info-label">File States</td>'
+        $fileStatesIndex = $content.IndexOf($fileStatesLabel)
+        
+        if ($fileStatesIndex -gt 0) {
+            # Look for the next badge after the File States label (within 500 chars)
+            $fileSection = $content.Substring($fileStatesIndex, [Math]::Min(500, $content.Length - $fileStatesIndex))
+            
+            # Pattern: <span class="badge...">VALUE</span>
+            if ($fileSection -match '<span\s+class="badge[^"]*">([^<]+)</span>') {
+                $result.FileState = $Matches[1].Trim()
+            }
+        }
+        
+        # ================================================================
+        # DETERMINE HEALTH STATUS
+        # ================================================================
+        
+        $reasons = @()
+        
+        # Check Torrent State - must be "Active"
+        if ($result.TorrentState -ne "Unknown") {
+            if ($result.TorrentState -ne "Active") {
+                $result.IsHealthy = $false
+                $reasons += "State: $($result.TorrentState) (expected: Active)"
+            }
+        }
+        
+        # Check File States - must start with "OK:" (note: Zurg uses "OK: " with space)
+        if ($result.FileState -ne "Unknown") {
+            # Zurg format is "OK: 1" with space after colon
+            if (-not ($result.FileState -match '^OK[:\s]')) {
+                $result.IsHealthy = $false
+                $reasons += "File States: $($result.FileState) (expected: OK: X)"
+            }
+        }
+        
+        # Combine reasons
+        if ($reasons.Count -gt 0) {
+            $result.Reason = $reasons -join "; "
+        }
+        
+        return $result
+    }
+    catch {
+        # If we can't fetch the page, don't flag as unhealthy - could be transient
+        return @{
+            IsHealthy = $true  # Assume healthy if we can't check
+            TorrentState = "Unknown"
+            FileState = "Unknown"
+            Reason = "Could not verify: $($_.Exception.Message)"
+            Error = $true
+        }
+    }
+}
+
+function Invoke-HealthVerification {
+    param(
+        [switch]$Compact  # Show compact progress (for auto-verify during monitoring)
+    )
+    
+    $startTime = Get-Date
+    
+    if (-not $Compact) {
+        Write-Host ""
+        Write-Host "======================================================================" -ForegroundColor Cyan
+        Write-Host "  HEALTH VERIFICATION STARTING" -ForegroundColor Cyan
+        Write-Host "======================================================================" -ForegroundColor Cyan
+        Write-Host ""
+    }
+    
+    # Always show this so user knows something is happening
+    Write-Host "  Fetching all OK torrents from Zurg..." -ForegroundColor Yellow
+    [Console]::Out.Flush()
+    
+    $okTorrents = Get-ZurgTorrentsByState -State "status_ok"
+    
+    if ($null -eq $okTorrents -or $okTorrents.Count -eq 0) {
+        Write-Log "No OK torrents found to verify" "INFO"
+        Write-Host "  No OK torrents found to verify." -ForegroundColor Green
+        return @{
+            Verified = 0
+            Mismatches = @()
+            TotalOK = 0
+            Duration = (Get-Date) - $startTime
+        }
+    }
+    
+    $totalCount = $okTorrents.Count
+    Write-Log "Found $totalCount torrents marked as OK - verifying ALL" "INFO"
+    
+    # Calculate estimated time
+    $estimatedSeconds = [math]::Ceiling($totalCount * ($VerifyDelayMs + 150) / 1000)
+    $estimatedTime = [TimeSpan]::FromSeconds($estimatedSeconds)
+    
+    Write-Host "  Found " -NoNewline -ForegroundColor White
+    Write-Host "$totalCount" -NoNewline -ForegroundColor Green
+    Write-Host " OK torrents to verify" -ForegroundColor White
+    Write-Host "  Estimated time: " -NoNewline -ForegroundColor White
+    Write-Host "$(Format-TimeSpan $estimatedTime)" -ForegroundColor Yellow
+    Write-Host "  Memory: $(Get-MemoryUsage) MB" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Verifying (this may take several minutes for large libraries)..." -ForegroundColor Cyan
+    Write-Host ""
+    [Console]::Out.Flush()
+    
+    # Use ArrayList for better memory efficiency (avoids array copy on each +=)
+    $mismatches = [System.Collections.ArrayList]::new()
+    $verified = 0
+    $errors = 0
+    $lastProgressUpdate = [DateTime]::MinValue
+    $lastMemoryCleanup = Get-Date
+    
+    foreach ($torrent in $okTorrents) {
+        $verified++
+        
+        # Update progress display
+        $now = Get-Date
+        $elapsed = $now - $startTime
+        
+        # Calculate progress
+        $percentComplete = [math]::Round(($verified / $totalCount) * 100, 1)
+        $torrentsPerSecond = if ($elapsed.TotalSeconds -gt 0) { $verified / $elapsed.TotalSeconds } else { 0 }
+        $remainingTorrents = $totalCount - $verified
+        $estimatedRemaining = if ($torrentsPerSecond -gt 0) { 
+            [TimeSpan]::FromSeconds($remainingTorrents / $torrentsPerSecond) 
+        } else { 
+            [TimeSpan]::Zero 
+        }
+        
+        # Update display every second or at milestones
+        $shouldUpdate = (($now - $lastProgressUpdate).TotalSeconds -ge 1) -or 
+                        ($verified -eq 1) -or 
+                        ($verified -eq $totalCount) -or
+                        ($verified % 100 -eq 0)
+        
+        if ($shouldUpdate) {
+            $barWidth = 30
+            $filledWidth = [math]::Floor(($verified / $totalCount) * $barWidth)
+            $filledWidth = [Math]::Max(0, [Math]::Min($barWidth, $filledWidth))  # Clamp to 0-barWidth
+            $emptyWidth = $barWidth - $filledWidth
+            $progressBar = ("█" * $filledWidth) + ("░" * $emptyWidth)
+            
+            # Clear line and write progress
+            $memUsage = Get-MemoryUsage
+            $statusLine = "  [$progressBar] $percentComplete% | $verified/$totalCount | " +
+                         "ETA: $(Format-TimeSpan $estimatedRemaining) | " +
+                         "Mismatches: $($mismatches.Count) | Mem: ${memUsage}MB"
+            
+            # Pad to overwrite previous content
+            $paddedLine = $statusLine.PadRight(110)
+            
+            Write-Host "`r$paddedLine" -NoNewline -ForegroundColor Gray
+            [Console]::Out.Flush()
+            
+            $lastProgressUpdate = $now
+        }
+        
+        # Periodic memory cleanup every 1000 torrents
+        if ($verified % 1000 -eq 0) {
+            $null = Invoke-MemoryCleanup -Silent
+        }
+        
+        # Check actual status
+        $healthResult = Get-TorrentHealthStatus -Hash $torrent['Hash'] -Name $torrent['Name']
+        
+        if ($healthResult.Error) {
+            $errors++
+        }
+        
+        # Only flag as mismatch if actually unhealthy
+        if (-not $healthResult.IsHealthy) {
+            $null = $mismatches.Add(@{
+                Hash = $torrent['Hash']
+                Name = $torrent['Name']
+                ReportedStatus = "OK"
+                ActualState = $healthResult.TorrentState
+                ActualFileState = $healthResult.FileState
+                Reason = $healthResult.Reason
+                Type = "Mismatch"
+                State = "mismatch"
+            })
+        }
+        
+        # Small delay to avoid hammering the server
+        if ($VerifyDelayMs -gt 0) {
+            Start-Sleep -Milliseconds $VerifyDelayMs
+        }
+    }
+    
+    # Clear the okTorrents array to free memory
+    $okTorrents = $null
+    
+    # Final progress update
+    $totalDuration = (Get-Date) - $startTime
+    Write-Host ""  # New line after progress bar
+    Write-Host ""
+    
+    # Convert ArrayList to array for return
+    $mismatchArray = @($mismatches.ToArray())
+    $mismatches.Clear()
+    $mismatches = $null
+    
+    # Update stats
+    $Script:Stats.TotalVerifications++
+    $Script:Stats.TorrentsVerified += $verified
+    $Script:Stats.MismatchesFound += $mismatchArray.Count
+    $Script:Stats.LastVerification = Get-Date
+    $Script:Stats.CurrentCheck.VerifiedCount = $verified
+    $Script:Stats.CurrentCheck.MismatchCount = $mismatchArray.Count
+    
+    # Update current mismatches list (with limit)
+    foreach ($mismatch in $mismatchArray) {
+        # Check if already in list
+        $existing = $Script:Stats.CurrentMismatches | Where-Object { $_['Hash'] -eq $mismatch['Hash'] }
+        if (-not $existing) {
+            $Script:Stats.CurrentMismatches += $mismatch
+        }
+    }
+    
+    # Trim old mismatches to prevent memory bloat
+    Clear-OldMismatches
+    
+    # Memory cleanup after verification
+    $null = Invoke-MemoryCleanup -Silent
+    
+    # Summary - always show results
+    Write-Host "======================================================================" -ForegroundColor Cyan
+    Write-Host "  HEALTH VERIFICATION COMPLETE" -ForegroundColor Cyan
+    Write-Host "======================================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Torrents Verified:   $verified" -ForegroundColor White
+    Write-Host "  Mismatches Found:    " -NoNewline -ForegroundColor White
+    if ($mismatchArray.Count -gt 0) {
+        Write-Host "$($mismatchArray.Count)" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "0 (All healthy!)" -ForegroundColor Green
+    }
+    Write-Host "  Verification Errors: $errors" -ForegroundColor $(if ($errors -gt 0) { "Yellow" } else { "Gray" })
+    Write-Host "  Total Duration:      $(Format-TimeSpan $totalDuration)" -ForegroundColor White
+    Write-Host "  Memory Usage:        $(Get-MemoryUsage) MB" -ForegroundColor Gray
+    Write-Host ""
+    
+    # Show mismatches if any (limit to first 10 in compact mode)
+    if ($mismatchArray.Count -gt 0) {
+        Write-Host "  MISMATCHED TORRENTS:" -ForegroundColor Yellow
+        $showCount = if ($Compact) { [Math]::Min($mismatchArray.Count, 10) } else { $mismatchArray.Count }
+        
+        for ($i = 0; $i -lt $showCount; $i++) {
+            $mismatch = $mismatchArray[$i]
+            Write-Host "    - $($mismatch['Name'])" -ForegroundColor Yellow
+            Write-Host "      State: $($mismatch['ActualState']) | File States: $($mismatch['ActualFileState'])" -ForegroundColor DarkYellow
+            Write-Host "      Reason: $($mismatch['Reason'])" -ForegroundColor DarkYellow
+        }
+        
+        if ($Compact -and $mismatchArray.Count -gt 10) {
+            Write-Host "    ... and $($mismatchArray.Count - 10) more (enter Management UI to see all)" -ForegroundColor Gray
+        }
+        Write-Host ""
+    }
+    
+    Write-Log "Health verification complete: $verified checked, $($mismatchArray.Count) mismatch(es) found in $(Format-TimeSpan $totalDuration)" "INFO"
+    
+    return @{
+        Verified = $verified
+        Mismatches = $mismatchArray
+        TotalOK = $totalCount
+        Duration = $totalDuration
+        Errors = $errors
     }
 }
 
@@ -458,10 +992,14 @@ function Invoke-TorrentDelete {
 }
 
 # ============================================================================
-# UNIFIED TORRENT MANAGEMENT UI (v2.4.0)
+# UNIFIED TORRENT MANAGEMENT UI
 # ============================================================================
 
 function Get-AllTorrentsForManagement {
+    param(
+        [switch]$IncludeMismatches
+    )
+    
     Write-Host "Fetching all torrent data..." -ForegroundColor Yellow
     
     $allTorrents = @()
@@ -484,6 +1022,17 @@ function Get-AllTorrentsForManagement {
         $allTorrents += $unrepairableTorrents
     }
     
+    # Include current mismatches if requested
+    if ($IncludeMismatches -and $Script:Stats.CurrentMismatches.Count -gt 0) {
+        foreach ($mismatch in $Script:Stats.CurrentMismatches) {
+            # Check if not already in list (avoid duplicates)
+            $exists = $allTorrents | Where-Object { $_['Hash'] -eq $mismatch['Hash'] }
+            if (-not $exists) {
+                $allTorrents += $mismatch
+            }
+        }
+    }
+    
     return ,$allTorrents
 }
 
@@ -500,7 +1049,7 @@ function Show-TorrentManagement {
     }
     
     # Initialize filter state
-    $filterState = "*"  # B=Broken, U=Under Repair, C=Cannot Repair, *=All
+    $filterState = "*"  # B=Broken, U=Under Repair, C=Cannot Repair, M=Mismatch, *=All
     $searchText = ""
     $reasonFilter = ""
     
@@ -527,6 +1076,7 @@ function Show-TorrentManagement {
                     "Broken" { "B" }
                     "Under Repair" { "U" }
                     "Unrepairable" { "C" }
+                    "Mismatch" { "M" }
                     default { "?" }
                 }
                 if ($typeChar -ne $filterState) {
@@ -558,11 +1108,12 @@ function Show-TorrentManagement {
         $brokenCount = ($Torrents | Where-Object { $_['Type'] -eq "Broken" }).Count
         $underRepairCount = ($Torrents | Where-Object { $_['Type'] -eq "Under Repair" }).Count
         $unrepairableCount = ($Torrents | Where-Object { $_['Type'] -eq "Unrepairable" }).Count
+        $mismatchCount = ($Torrents | Where-Object { $_['Type'] -eq "Mismatch" }).Count
         
         # Header
         Write-Host ""
         Write-Host "======================================================================" -ForegroundColor Magenta
-        Write-Host "  TORRENT MANAGEMENT CENTER v2.4.0" -ForegroundColor Magenta
+        Write-Host "  TORRENT MANAGEMENT CENTER v2.5.1" -ForegroundColor Magenta
         Write-Host "======================================================================" -ForegroundColor Magenta
         Write-Host ""
         
@@ -572,14 +1123,28 @@ function Show-TorrentManagement {
         Write-Host "  |  " -NoNewline -ForegroundColor White
         Write-Host "Under Repair: $underRepairCount" -NoNewline -ForegroundColor Cyan
         Write-Host "  |  " -NoNewline -ForegroundColor White
-        Write-Host "Unrepairable: $unrepairableCount" -ForegroundColor Red
+        Write-Host "Unrepairable: $unrepairableCount" -NoNewline -ForegroundColor Red
+        if ($mismatchCount -gt 0) {
+            Write-Host "  |  " -NoNewline -ForegroundColor White
+            Write-Host "Mismatch: $mismatchCount" -ForegroundColor Magenta
+        }
+        else {
+            Write-Host ""
+        }
         Write-Host ""
         
-        # AutoRepair status
+        # Status line
         $autoRepairStatus = if ($Script:AutoRepairEnabled) { "ON" } else { "OFF" }
         $autoRepairColor = if ($Script:AutoRepairEnabled) { "Green" } else { "Yellow" }
+        $autoVerifyStatus = if ($Script:AutoVerifyEnabled) { "ON (startup)" } else { "OFF" }
+        $autoVerifyColor = if ($Script:AutoVerifyEnabled) { "Green" } else { "Yellow" }
+        
         Write-Host "AutoRepair: " -NoNewline -ForegroundColor Gray
-        Write-Host $autoRepairStatus -ForegroundColor $autoRepairColor
+        Write-Host $autoRepairStatus -NoNewline -ForegroundColor $autoRepairColor
+        Write-Host "  |  AutoVerify: " -NoNewline -ForegroundColor Gray
+        Write-Host $autoVerifyStatus -NoNewline -ForegroundColor $autoVerifyColor
+        Write-Host "  |  Settings: " -NoNewline -ForegroundColor Gray
+        Write-Host "Saved" -ForegroundColor DarkGray
         Write-Host ""
         
         # Active filters display
@@ -591,6 +1156,7 @@ function Show-TorrentManagement {
                     "B" { "Broken" }
                     "U" { "Under Repair" }
                     "C" { "Unrepairable" }
+                    "M" { "Mismatch" }
                 }
                 Write-Host "  State: $stateName" -ForegroundColor Yellow
             }
@@ -625,12 +1191,14 @@ function Show-TorrentManagement {
                     "Broken" { "Yellow" }
                     "Under Repair" { "Cyan" }
                     "Unrepairable" { "Red" }
+                    "Mismatch" { "Magenta" }
                     default { "White" }
                 }
                 $typeBadge = switch ($torrent['Type']) {
                     "Broken" { "[BRK]" }
                     "Under Repair" { "[REP]" }
                     "Unrepairable" { "[BAD]" }
+                    "Mismatch" { "[MIS]" }
                     default { "[???]" }
                 }
                 
@@ -638,8 +1206,8 @@ function Show-TorrentManagement {
                 Write-Host $typeBadge -NoNewline -ForegroundColor $typeColor
                 Write-Host " $($torrent['Name'])" -ForegroundColor White
                 
-                # Show reason for unrepairable torrents
-                if ($torrent['Type'] -eq "Unrepairable" -and $torrent['Reason'] -ne "") {
+                # Show reason for unrepairable or mismatch torrents
+                if (($torrent['Type'] -eq "Unrepairable" -or $torrent['Type'] -eq "Mismatch") -and $torrent['Reason'] -ne "") {
                     Write-Host "          Reason: " -NoNewline -ForegroundColor Gray
                     Write-Host $torrent['Reason'] -ForegroundColor DarkYellow
                 }
@@ -657,11 +1225,14 @@ function Show-TorrentManagement {
         Write-Host ""
         Write-Host "FILTERS:" -ForegroundColor Yellow
         Write-Host "  [FB] Filter Broken   [FU] Filter Under Repair   [FC] Filter Unrepairable" -ForegroundColor White
-        Write-Host "  [F*] Show All        [FS] Search by name        [FR] Filter by reason" -ForegroundColor White
-        Write-Host "  [FX] Clear all filters" -ForegroundColor White
+        Write-Host "  [FM] Filter Mismatch [F*] Show All              [FS] Search by name" -ForegroundColor White
+        Write-Host "  [FR] Filter by reason                           [FX] Clear all filters" -ForegroundColor White
         Write-Host ""
         Write-Host "BULK BY REASON:" -ForegroundColor Yellow
         Write-Host "  [BR] Select all matching a reason (e.g., 'infringing', 'not cached')" -ForegroundColor White
+        Write-Host ""
+        Write-Host "VERIFICATION:" -ForegroundColor Yellow
+        Write-Host "  [V]  Run health verification now    [TV] Toggle AutoVerify on/off" -ForegroundColor White
         Write-Host ""
         Write-Host "ACTIONS:" -ForegroundColor Yellow
         Write-Host "  [R] Repair selected    [D] Delete selected    [T] Toggle AutoRepair" -ForegroundColor White
@@ -756,34 +1327,20 @@ function Show-TorrentManagement {
         
         # ==================== FILTER COMMANDS ====================
         
-        # Filter Broken
-        elseif ($inputUpper -eq "FB") {
-            $filterState = "B"
-        }
-        # Filter Under Repair
-        elseif ($inputUpper -eq "FU") {
-            $filterState = "U"
-        }
-        # Filter Unrepairable (Cannot Repair)
-        elseif ($inputUpper -eq "FC") {
-            $filterState = "C"
-        }
-        # Show All (clear state filter)
-        elseif ($inputUpper -eq "F*") {
-            $filterState = "*"
-        }
-        # Search by name
+        elseif ($inputUpper -eq "FB") { $filterState = "B" }
+        elseif ($inputUpper -eq "FU") { $filterState = "U" }
+        elseif ($inputUpper -eq "FC") { $filterState = "C" }
+        elseif ($inputUpper -eq "FM") { $filterState = "M" }
+        elseif ($inputUpper -eq "F*") { $filterState = "*" }
         elseif ($inputUpper -eq "FS") {
             Write-Host ""
             $searchText = Read-Host "Enter search text (blank to clear)"
         }
-        # Filter by reason
         elseif ($inputUpper -eq "FR") {
             Write-Host ""
             Write-Host "Common reasons: infringing, not cached, download status: error, invalid file ids" -ForegroundColor Gray
             $reasonFilter = Read-Host "Enter reason filter (blank to clear)"
         }
-        # Clear all filters
         elseif ($inputUpper -eq "FX") {
             $filterState = "*"
             $searchText = ""
@@ -813,19 +1370,71 @@ function Show-TorrentManagement {
             }
         }
         
+        # ==================== VERIFICATION COMMANDS ====================
+        
+        elseif ($inputUpper -eq "V") {
+            Write-Host ""
+            Write-Host "Starting health verification of ALL OK torrents..." -ForegroundColor Cyan
+            Write-Host "This may take a while for large libraries." -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "Press any key to start, or 'Q' to cancel..." -ForegroundColor Gray
+            $keyPress = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            
+            if ($keyPress.Character -ne 'Q' -and $keyPress.Character -ne 'q') {
+                $result = Invoke-HealthVerification
+                
+                if ($result.Mismatches.Count -gt 0) {
+                    Write-Host ""
+                    Write-Host "Add mismatches to management list? (y/n): " -NoNewline -ForegroundColor Cyan
+                    $addChoice = Read-Host
+                    if ($addChoice.ToLower() -eq 'y') {
+                        # Refresh torrent list with mismatches
+                        $newTorrents = Get-AllTorrentsForManagement -IncludeMismatches
+                        if ($null -ne $newTorrents -and $newTorrents.Count -gt 0) {
+                            $Torrents = $newTorrents
+                            $selected = @{}
+                            for ($i = 0; $i -lt $Torrents.Count; $i++) {
+                                $selected[$i] = $false
+                            }
+                        }
+                    }
+                }
+                
+                Write-Host "Press any key to continue..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            }
+        }
+        
+        elseif ($inputUpper -eq "TV") {
+            $Script:AutoVerifyEnabled = -not $Script:AutoVerifyEnabled
+            $status = if ($Script:AutoVerifyEnabled) { "ENABLED" } else { "DISABLED" }
+            Write-Host ""
+            Write-Host "AutoVerify is now $status" -ForegroundColor $(if ($Script:AutoVerifyEnabled) { "Green" } else { "Yellow" })
+            Write-Log "AutoVerify toggled to $status via Management UI" "INFO"
+            
+            # Save settings
+            if (Save-Settings) {
+                Write-Host "(Setting saved)" -ForegroundColor Gray
+            }
+            Start-Sleep -Seconds 1
+        }
+        
         # ==================== ACTION COMMANDS ====================
         
-        # Toggle AutoRepair
         elseif ($inputUpper -eq "T") {
             $Script:AutoRepairEnabled = -not $Script:AutoRepairEnabled
             $status = if ($Script:AutoRepairEnabled) { "ENABLED" } else { "DISABLED" }
             Write-Host ""
             Write-Host "AutoRepair is now $status" -ForegroundColor $(if ($Script:AutoRepairEnabled) { "Green" } else { "Yellow" })
             Write-Log "AutoRepair toggled to $status via Management UI" "INFO"
+            
+            # Save settings
+            if (Save-Settings) {
+                Write-Host "(Setting saved)" -ForegroundColor Gray
+            }
             Start-Sleep -Seconds 1
         }
         
-        # Repair selected
         elseif ($inputUpper -eq "R") {
             $toRepair = @()
             foreach ($idx in $visibleIndices) {
@@ -858,6 +1467,11 @@ function Show-TorrentManagement {
                     $success = Invoke-TorrentRepair -Hash $torrent['Hash'] -Name $torrent['Name']
                     if ($success) {
                         $successCount++
+                        
+                        if ($torrent['Type'] -eq "Mismatch") {
+                            $Script:Stats.CurrentMismatches = $Script:Stats.CurrentMismatches | Where-Object { $_['Hash'] -ne $torrent['Hash'] }
+                            $Script:Stats.MismatchesCorrected++
+                        }
                     }
                     Start-Sleep -Milliseconds 500
                 }
@@ -868,12 +1482,11 @@ function Show-TorrentManagement {
                 Write-Host "Press any key to continue..." -ForegroundColor Gray
                 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
                 
-                # Prompt to refresh
                 Write-Host ""
                 Write-Host "Refresh torrent list? (y/n): " -NoNewline -ForegroundColor Cyan
                 $refreshChoice = Read-Host
                 if ($refreshChoice.ToLower() -eq 'y') {
-                    $newTorrents = Get-AllTorrentsForManagement
+                    $newTorrents = Get-AllTorrentsForManagement -IncludeMismatches
                     if ($null -eq $newTorrents -or $newTorrents.Count -eq 0) {
                         Write-Host "No torrents found. Returning to monitoring." -ForegroundColor Green
                         Write-Host "Press any key..." -ForegroundColor Gray
@@ -893,7 +1506,6 @@ function Show-TorrentManagement {
             }
         }
         
-        # Delete selected
         elseif ($inputUpper -eq "D") {
             $toDelete = @()
             foreach ($idx in $visibleIndices) {
@@ -926,6 +1538,11 @@ function Show-TorrentManagement {
                     $success = Invoke-TorrentDelete -Hash $torrent['Hash'] -Name $torrent['Name']
                     if ($success) {
                         $successCount++
+                        
+                        if ($torrent['Type'] -eq "Mismatch") {
+                            $Script:Stats.CurrentMismatches = $Script:Stats.CurrentMismatches | Where-Object { $_['Hash'] -ne $torrent['Hash'] }
+                            $Script:Stats.MismatchesCorrected++
+                        }
                     }
                     Start-Sleep -Milliseconds 500
                 }
@@ -936,12 +1553,11 @@ function Show-TorrentManagement {
                 Write-Host "Press any key to continue..." -ForegroundColor Gray
                 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
                 
-                # Prompt to refresh
                 Write-Host ""
                 Write-Host "Refresh torrent list? (y/n): " -NoNewline -ForegroundColor Cyan
                 $refreshChoice = Read-Host
                 if ($refreshChoice.ToLower() -eq 'y') {
-                    $newTorrents = Get-AllTorrentsForManagement
+                    $newTorrents = Get-AllTorrentsForManagement -IncludeMismatches
                     if ($null -eq $newTorrents -or $newTorrents.Count -eq 0) {
                         Write-Host "No torrents found. Returning to monitoring." -ForegroundColor Green
                         Write-Host "Press any key..." -ForegroundColor Gray
@@ -961,10 +1577,9 @@ function Show-TorrentManagement {
             }
         }
         
-        # Refresh list
         elseif ($inputUpper -eq "L") {
             Write-Host "Refreshing torrent list..." -ForegroundColor Yellow
-            $newTorrents = Get-AllTorrentsForManagement
+            $newTorrents = Get-AllTorrentsForManagement -IncludeMismatches
             if ($null -eq $newTorrents -or $newTorrents.Count -eq 0) {
                 Write-Host "No torrents found. Returning to monitoring." -ForegroundColor Green
                 Write-Host "Press any key..." -ForegroundColor Gray
@@ -980,12 +1595,10 @@ function Show-TorrentManagement {
             Start-Sleep -Seconds 1
         }
         
-        # Quit
         elseif ($inputUpper -eq "Q") {
             return
         }
         
-        # Invalid command
         else {
             Write-Host "Invalid command. Press any key to continue..." -ForegroundColor Red
             $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
@@ -1013,6 +1626,8 @@ function Start-BrokenTorrentCheck {
         UnrepairableHashes = @()
         UnrepairableNames = @()
         UnrepairableReasons = @()
+        VerifiedCount = 0
+        MismatchCount = 0
     }
     
     # Get broken torrents
@@ -1109,7 +1724,6 @@ function Start-BrokenTorrentCheck {
     if ($Script:AutoRepairEnabled) {
         Write-Log "AutoRepair is ENABLED - triggering repairs..." "INFO"
         
-        # Trigger repair for broken torrents
         if ($null -ne $brokenTorrents -and $brokenTorrents.Count -gt 0) {
             foreach ($torrent in $brokenTorrents) {
                 $success = Invoke-TorrentRepair -Hash $torrent['Hash'] -Name $torrent['Name']
@@ -1121,7 +1735,6 @@ function Start-BrokenTorrentCheck {
             }
         }
         
-        # Trigger repair for under repair torrents (re-trigger to help them along)
         if ($null -ne $underRepairTorrents -and $underRepairTorrents.Count -gt 0) {
             Write-Log "" "INFO"
             Write-Log "Re-triggering repairs for under repair torrents..." "INFO"
@@ -1159,18 +1772,35 @@ function Show-Statistics {
     
     $lastCheck = if ($Script:Stats.LastCheck) { $Script:Stats.LastCheck.ToString("yyyy-MM-dd HH:mm:ss") } else { "Never" }
     $lastBroken = if ($Script:Stats.LastBrokenFound) { $Script:Stats.LastBrokenFound.ToString("yyyy-MM-dd HH:mm:ss") } else { "Never" }
+    $lastVerify = if ($Script:Stats.LastVerification) { $Script:Stats.LastVerification.ToString("yyyy-MM-dd HH:mm:ss") } else { "Never" }
     
-    Write-Host "Total Checks Performed:    $($Script:Stats.TotalChecks)" -ForegroundColor Cyan
-    Write-Host "Total Broken Found:        $($Script:Stats.BrokenFound)" -ForegroundColor Cyan
-    Write-Host "Total Under Repair Found:  $($Script:Stats.UnderRepairFound)" -ForegroundColor Cyan
-    Write-Host "Total Unrepairable Found:  $($Script:Stats.UnrepairableFound)" -ForegroundColor Cyan
-    Write-Host "Total Repairs Triggered:   $($Script:Stats.RepairsTriggered)" -ForegroundColor Cyan
-    Write-Host "Total Deletions Triggered: $($Script:Stats.DeletionsTriggered)" -ForegroundColor Cyan
-    Write-Host "Last Check:                $lastCheck" -ForegroundColor Cyan
-    Write-Host "Last Broken Found:         $lastBroken" -ForegroundColor Cyan
+    Write-Host "MONITORING:" -ForegroundColor Yellow
+    Write-Host "  Total Checks Performed:    $($Script:Stats.TotalChecks)" -ForegroundColor Cyan
+    Write-Host "  Total Broken Found:        $($Script:Stats.BrokenFound)" -ForegroundColor Cyan
+    Write-Host "  Total Under Repair Found:  $($Script:Stats.UnderRepairFound)" -ForegroundColor Cyan
+    Write-Host "  Total Unrepairable Found:  $($Script:Stats.UnrepairableFound)" -ForegroundColor Cyan
+    Write-Host "  Total Repairs Triggered:   $($Script:Stats.RepairsTriggered)" -ForegroundColor Cyan
+    Write-Host "  Total Deletions Triggered: $($Script:Stats.DeletionsTriggered)" -ForegroundColor Cyan
+    Write-Host "  Last Check:                $lastCheck" -ForegroundColor Cyan
+    Write-Host "  Last Broken Found:         $lastBroken" -ForegroundColor Cyan
     Write-Host ""
-    $autoStatus = if ($Script:AutoRepairEnabled) { "ENABLED" } else { "DISABLED" }
-    Write-Host "AutoRepair Status:         $autoStatus" -ForegroundColor $(if ($Script:AutoRepairEnabled) { "Green" } else { "Yellow" })
+    
+    Write-Host "VERIFICATION:" -ForegroundColor Yellow
+    Write-Host "  Total Verifications Run:   $($Script:Stats.TotalVerifications)" -ForegroundColor Cyan
+    Write-Host "  Torrents Verified:         $($Script:Stats.TorrentsVerified)" -ForegroundColor Cyan
+    Write-Host "  Mismatches Found:          $($Script:Stats.MismatchesFound)" -ForegroundColor $(if ($Script:Stats.MismatchesFound -gt 0) { "Yellow" } else { "Cyan" })
+    Write-Host "  Mismatches Corrected:      $($Script:Stats.MismatchesCorrected)" -ForegroundColor Cyan
+    Write-Host "  Current Pending Mismatches:$($Script:Stats.CurrentMismatches.Count)" -ForegroundColor $(if ($Script:Stats.CurrentMismatches.Count -gt 0) { "Yellow" } else { "Cyan" })
+    Write-Host "  Last Verification:         $lastVerify" -ForegroundColor Cyan
+    Write-Host ""
+    
+    Write-Host "STATUS:" -ForegroundColor Yellow
+    $autoRepairStatus = if ($Script:AutoRepairEnabled) { "ENABLED" } else { "DISABLED" }
+    $autoVerifyStatus = if ($Script:AutoVerifyEnabled) { "ENABLED (startup)" } else { "DISABLED" }
+    Write-Host "  AutoRepair:                $autoRepairStatus" -ForegroundColor $(if ($Script:AutoRepairEnabled) { "Green" } else { "Yellow" })
+    Write-Host "  AutoVerify:                $autoVerifyStatus" -ForegroundColor $(if ($Script:AutoVerifyEnabled) { "Green" } else { "Yellow" })
+    Write-Host "  Settings File:             $(Get-SettingsPath)" -ForegroundColor Gray
+    Write-Host "  Memory Usage:              $(Get-MemoryUsage) MB" -ForegroundColor Gray
 }
 
 function Show-CheckSummary {
@@ -1216,6 +1846,19 @@ function Show-CheckSummary {
         for ($i = 0; $i -lt $Script:Stats.CurrentCheck.UnrepairableNames.Count; $i++) {
             Write-Host "    - $($Script:Stats.CurrentCheck.UnrepairableNames[$i])" -ForegroundColor Yellow
             Write-Host "      Reason: $($Script:Stats.CurrentCheck.UnrepairableReasons[$i])" -ForegroundColor DarkYellow
+        }
+    }
+    
+    # Show current mismatches if any
+    if ($Script:Stats.CurrentMismatches.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  Status Mismatches (Pending):" -ForegroundColor Magenta
+        foreach ($mismatch in $Script:Stats.CurrentMismatches | Select-Object -First 5) {
+            Write-Host "    - $($mismatch['Name'])" -ForegroundColor Magenta
+            Write-Host "      Issue: $($mismatch['Reason'])" -ForegroundColor DarkMagenta
+        }
+        if ($Script:Stats.CurrentMismatches.Count -gt 5) {
+            Write-Host "    ... and $($Script:Stats.CurrentMismatches.Count - 5) more" -ForegroundColor Gray
         }
     }
     
@@ -1277,7 +1920,7 @@ function Show-CheckSummary {
     Write-Host "======================================================================" -ForegroundColor Cyan
     
     # Offer management mode if there are any problem torrents
-    $totalProblems = $Script:Stats.CurrentCheck.BrokenFound + $Script:Stats.CurrentCheck.UnderRepairFound + $Script:Stats.CurrentCheck.UnrepairableFound
+    $totalProblems = $Script:Stats.CurrentCheck.BrokenFound + $Script:Stats.CurrentCheck.UnderRepairFound + $Script:Stats.CurrentCheck.UnrepairableFound + $Script:Stats.CurrentMismatches.Count
     
     if ($totalProblems -gt 0) {
         Write-Host ""
@@ -1285,7 +1928,6 @@ function Show-CheckSummary {
         
         $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         if ($key.Character -eq 'M' -or $key.Character -eq 'm') {
-            # Build combined torrent list for management
             $allTorrents = @()
             
             if ($null -ne $BrokenTorrents) {
@@ -1297,6 +1939,12 @@ function Show-CheckSummary {
             if ($null -ne $UnrepairableTorrents) {
                 $allTorrents += $UnrepairableTorrents
             }
+            foreach ($mismatch in $Script:Stats.CurrentMismatches) {
+                $exists = $allTorrents | Where-Object { $_['Hash'] -eq $mismatch['Hash'] }
+                if (-not $exists) {
+                    $allTorrents += $mismatch
+                }
+            }
             
             Show-TorrentManagement -Torrents $allTorrents
         }
@@ -1306,19 +1954,32 @@ function Show-CheckSummary {
 }
 
 # ============================================================================
-# MAIN MONITORING LOOP
+# MAIN MONITORING LOOP WITH COUNTDOWN TIMER
 # ============================================================================
 
 function Start-MonitoringLoop {
-    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.4.0"
+    Write-Banner "ZURG BROKEN TORRENT MONITOR v2.5.2"
     
+    # Load saved settings
+    Write-Log "Loading settings..." "INFO"
+    if (Load-Settings) {
+        Write-Log "Settings loaded from file" "SUCCESS"
+    }
+    else {
+        Write-Log "Using default settings (AutoRepair: OFF, AutoVerify: OFF)" "INFO"
+    }
+    
+    Write-Log "" "INFO"
     Write-Log "Starting Zurg Broken Torrent Monitor" "INFO"
     Write-Log "Zurg URL: $ZurgUrl" "INFO"
     Write-Log "Check Interval: $CheckIntervalMinutes minutes" "INFO"
     Write-Log "Log File: $LogFile" "INFO"
+    Write-Log "Settings File: $(Get-SettingsPath)" "INFO"
     Write-Log "Authentication: $(if ($Username) { 'Enabled' } else { 'Disabled' })" "INFO"
-    $repairMode = if (-not $Script:AutoRepairEnabled) { "Disabled (Monitoring Only)" } else { "Enabled" }
+    $repairMode = if ($Script:AutoRepairEnabled) { "ENABLED" } else { "DISABLED" }
     Write-Log "Auto-Repair: $repairMode" "INFO"
+    $verifyMode = if ($Script:AutoVerifyEnabled) { "ENABLED (runs on startup)" } else { "DISABLED" }
+    Write-Log "Auto-Verify: $verifyMode" "INFO"
     Write-Log "" "INFO"
     
     if (-not (Test-ZurgConnection)) {
@@ -1327,6 +1988,41 @@ function Start-MonitoringLoop {
     }
     
     Write-Log "" "INFO"
+    
+    # Run startup verification if enabled and not skipped
+    if ($Script:AutoVerifyEnabled -and -not $SkipStartupVerification) {
+        Write-Log "Running startup health verification..." "INFO"
+        Write-Host ""
+        Write-Host "======================================================================" -ForegroundColor Magenta
+        Write-Host "  STARTUP HEALTH VERIFICATION" -ForegroundColor Magenta
+        Write-Host "  (Disable with -SkipStartupVerification or toggle AutoVerify OFF)" -ForegroundColor DarkMagenta
+        Write-Host "======================================================================" -ForegroundColor Magenta
+        Write-Host ""
+        
+        $verifyResult = Invoke-HealthVerification
+        
+        if ($verifyResult.Mismatches.Count -gt 0) {
+            Write-Host ""
+            Write-Host "Press 'M' to manage mismatches now, or any key to continue to monitoring..." -ForegroundColor Cyan
+            $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            
+            if ($key.Character -eq 'M' -or $key.Character -eq 'm') {
+                $allTorrents = Get-AllTorrentsForManagement -IncludeMismatches
+                if ($null -ne $allTorrents -and $allTorrents.Count -gt 0) {
+                    Show-TorrentManagement -Torrents $allTorrents
+                }
+            }
+        }
+        else {
+            Write-Host "Press any key to continue to monitoring..." -ForegroundColor Gray
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        }
+        
+        Write-Host ""
+    }
+    elseif ($SkipStartupVerification) {
+        Write-Log "Startup verification skipped (command-line flag)" "INFO"
+    }
     
     if ($RunOnce) {
         Write-Log "Running in single-check mode" "INFO"
@@ -1343,24 +2039,37 @@ function Start-MonitoringLoop {
         while ($true) {
             Start-BrokenTorrentCheck
             
-            Write-Log "" "INFO"
-            Write-Log "Next check in $CheckIntervalMinutes minutes... (Press 'M' for Management, 'S' for Stats)" "INFO"
-            Write-Log "======================================================================" "INFO"
+            # Memory cleanup after each check cycle
+            $null = Invoke-MemoryCleanup -Silent
+            
             Write-Log "" "INFO"
             
-            # Wait with keypress detection
+            # Wait with live countdown timer
             $waitSeconds = $CheckIntervalMinutes * 60
             $endTime = (Get-Date).AddSeconds($waitSeconds)
+            $startWait = Get-Date
+            
+            Write-Host ""
+            Write-Host "======================================================================" -ForegroundColor DarkGray
+            Write-Host "  WAITING FOR NEXT CHECK                              Mem: $(Get-MemoryUsage) MB" -ForegroundColor DarkGray
+            Write-Host "  Press: [M] Management  [S] Stats  [V] Health Verify  [Ctrl+C] Exit" -ForegroundColor DarkGray
+            Write-Host "======================================================================" -ForegroundColor DarkGray
+            Write-Host ""
+            
+            $lastUpdate = Get-Date
             
             while ((Get-Date) -lt $endTime) {
                 # Check for keypress (non-blocking)
                 if ([Console]::KeyAvailable) {
                     $key = [Console]::ReadKey($true)
                     
+                    # Clear the countdown line
+                    Write-Host "`r" + (" " * 80) + "`r" -NoNewline
+                    
                     if ($key.Key -eq 'M') {
                         Write-Host ""
                         Write-Host "Entering Management Mode..." -ForegroundColor Cyan
-                        $allTorrents = Get-AllTorrentsForManagement
+                        $allTorrents = Get-AllTorrentsForManagement -IncludeMismatches
                         if ($null -ne $allTorrents -and $allTorrents.Count -gt 0) {
                             Show-TorrentManagement -Torrents $allTorrents
                         }
@@ -1370,26 +2079,116 @@ function Start-MonitoringLoop {
                             $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
                         }
                         
-                        # After returning from management, show remaining time
-                        $remaining = ($endTime - (Get-Date)).TotalMinutes
-                        if ($remaining -gt 0) {
-                            Write-Log "" "INFO"
-                            Write-Log "Returned to monitoring. Next check in $([math]::Round($remaining, 1)) minutes... (Press 'M' for Management, 'S' for Stats)" "INFO"
+                        # Memory cleanup after management
+                        $null = Invoke-MemoryCleanup -Silent
+                        
+                        # Re-display wait header only if time remains
+                        $remaining = $endTime - (Get-Date)
+                        if ($remaining.TotalSeconds -gt 0) {
+                            Write-Host ""
+                            Write-Host "======================================================================" -ForegroundColor DarkGray
+                            Write-Host "  WAITING FOR NEXT CHECK                              Mem: $(Get-MemoryUsage) MB" -ForegroundColor DarkGray
+                            Write-Host "  Press: [M] Management  [S] Stats  [V] Health Verify  [Ctrl+C] Exit" -ForegroundColor DarkGray
+                            Write-Host "======================================================================" -ForegroundColor DarkGray
+                            Write-Host ""
+                        }
+                        else {
+                            # Time expired while in management, continue to next check
+                            break
                         }
                     }
                     elseif ($key.Key -eq 'S') {
                         Write-Host ""
                         Show-Statistics
                         Write-Host ""
-                        $remaining = ($endTime - (Get-Date)).TotalMinutes
-                        if ($remaining -gt 0) {
-                            Write-Log "Next check in $([math]::Round($remaining, 1)) minutes... (Press 'M' for Management, 'S' for Stats)" "INFO"
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                        
+                        # Re-display wait header only if time remains
+                        $remaining = $endTime - (Get-Date)
+                        if ($remaining.TotalSeconds -gt 0) {
+                            Write-Host ""
+                            Write-Host "======================================================================" -ForegroundColor DarkGray
+                            Write-Host "  WAITING FOR NEXT CHECK                              Mem: $(Get-MemoryUsage) MB" -ForegroundColor DarkGray
+                            Write-Host "  Press: [M] Management  [S] Stats  [V] Health Verify  [Ctrl+C] Exit" -ForegroundColor DarkGray
+                            Write-Host "======================================================================" -ForegroundColor DarkGray
+                            Write-Host ""
                         }
+                        else {
+                            # Time expired, continue to next check
+                            break
+                        }
+                    }
+                    elseif ($key.Key -eq 'V') {
+                        Write-Host ""
+                        $result = Invoke-HealthVerification
+                        Write-Host ""
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                        
+                        # Re-display wait header only if time remains
+                        $remaining = $endTime - (Get-Date)
+                        if ($remaining.TotalSeconds -gt 0) {
+                            Write-Host ""
+                            Write-Host "======================================================================" -ForegroundColor DarkGray
+                            Write-Host "  WAITING FOR NEXT CHECK                              Mem: $(Get-MemoryUsage) MB" -ForegroundColor DarkGray
+                            Write-Host "  Press: [M] Management  [S] Stats  [V] Health Verify  [Ctrl+C] Exit" -ForegroundColor DarkGray
+                            Write-Host "======================================================================" -ForegroundColor DarkGray
+                            Write-Host ""
+                        }
+                        else {
+                            # Time expired, continue to next check
+                            break
+                        }
+                    }
+                    else {
+                        # Unrecognized key - check if wait time expired
+                        $remaining = $endTime - (Get-Date)
+                        if ($remaining.TotalSeconds -le 0) {
+                            # Time expired, continue to next check
+                            break
+                        }
+                        # Otherwise just ignore the key and continue waiting
                     }
                 }
                 
-                Start-Sleep -Milliseconds 250
+                # Update countdown display every second
+                $now = Get-Date
+                if (($now - $lastUpdate).TotalMilliseconds -ge 1000) {
+                    $remaining = $endTime - $now
+                    $elapsed = $now - $startWait
+                    
+                    # Check if we've exceeded the wait time (shouldn't happen but just in case)
+                    if ($remaining.TotalSeconds -le 0) {
+                        break  # Exit the wait loop
+                    }
+                    
+                    # Build countdown display
+                    $countdownText = Format-TimeSpan $remaining
+                    $nextCheckTime = $endTime.ToString("HH:mm:ss")
+                    
+                    # Progress bar for wait time (with bounds checking)
+                    $waitProgress = 1 - ($remaining.TotalSeconds / $waitSeconds)
+                    $waitProgress = [Math]::Max(0, [Math]::Min(1, $waitProgress))  # Clamp to 0-1
+                    $barWidth = 20
+                    $filledWidth = [math]::Floor($waitProgress * $barWidth)
+                    $filledWidth = [Math]::Max(0, [Math]::Min($barWidth, $filledWidth))  # Clamp to 0-barWidth
+                    $emptyWidth = $barWidth - $filledWidth
+                    $progressBar = ("█" * $filledWidth) + ("░" * $emptyWidth)
+                    
+                    $statusLine = "`r  [$progressBar] Next check in: $countdownText (at $nextCheckTime)    "
+                    Write-Host $statusLine -NoNewline -ForegroundColor Yellow
+                    
+                    $lastUpdate = $now
+                }
+                
+                Start-Sleep -Milliseconds 100
             }
+            
+            Write-Host ""  # New line after countdown
+            Write-Host ""
+            Write-Log "======================================================================" "INFO"
+            Write-Log "" "INFO"
         }
     }
     catch {
