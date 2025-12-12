@@ -1,6 +1,6 @@
 # Zurg Broken Torrent Monitor & Repair Tool
 
-[![Version](https://img.shields.io/badge/version-2.4.0-blue.svg)](https://github.com/maddguru/zurg-broken-torrent-monitor/releases/latest)
+[![Version](https://img.shields.io/badge/version-2.5.2-blue.svg)](https://github.com/maddguru/zurg-broken-torrent-monitor/releases/latest)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/PowerShell/PowerShell#get-powershell)
@@ -13,56 +13,60 @@
 
 Zurg Broken Torrent Monitor is a PowerShell script that continuously monitors your Zurg instance for broken, under-repair, and unrepairable torrents. It provides a unified management interface, automatic repairs, and comprehensive statistics about your torrent library's health.
 
-### Key Features
+## Features
 
-**Core Monitoring:**
-- 🔍 **Broken Torrent Detection** - Automatically detects torrents in broken state
-- 🔧 **Automatic Repairs** - Optional auto-repair for broken torrents
-- 🔄 **Under-Repair Monitoring** - Tracks torrents currently being repaired
-- 📊 **Statistics Tracking** - Comprehensive stats for all operations
+### Core Monitoring
+- 🔍 **Automatic Detection** - Continuously monitors Zurg for broken torrents
+- 🔧 **Auto-Repair** - Optionally trigger repairs automatically (toggle with `T`)
+- 📊 **Statistics Tracking** - Detailed stats on checks, repairs, and verifications
+- ⌨️ **Hotkey Controls** - Quick access to all features without stopping monitoring
 
-**v2.4.0 - Unified Management Center:**
-- 🆕 **Unified Management UI** - ALL torrent types in one interface (Broken, Under Repair, Unrepairable)
-- 🆕 **Advanced Filtering** - Filter by state, search by name, filter by reason
-- 🆕 **Bulk Select by Reason** - Select all torrents matching a reason pattern
-- 🆕 **Live AutoRepair Toggle** - Toggle AutoRepair ON/OFF without restarting
-- 🆕 **Hotkeys During Wait** - Press 'M' anytime to enter Management, 'S' for Stats
+### Health Verification (New in v2.5.2)
+- 🏥 **Library Health Scan** - Verify all "OK" torrents have correct actual status
+- 🎯 **Mismatch Detection** - Find torrents where reported ≠ actual status
+- 📈 **Live Progress** - Real-time progress bar with ETA and memory usage
+- 🚀 **Startup Verification** - Optional scan on script start (toggle with `TV`)
 
-**Previous Features (v2.3.0):**
-- ✅ **Bulk Selection** - Advanced selection: single, ranges (`1-10`), lists (`1,5,10`), mixed (`1-5,10,15-20`)
-- ✅ **Continuous Management** - Stay in management mode, refresh after actions
-- ✅ **Repair or Delete** - Choose to repair or delete selected torrents
-- ✅ **Deletion Tracking** - Statistics for manual deletions
+### Settings & Memory
+- 💾 **Persistent Settings** - AutoRepair/AutoVerify preferences saved to JSON
+- 🧠 **Memory Optimized** - Efficient handling for large libraries (5000+ torrents)
+- 📉 **Memory Display** - Current usage shown in status bar
+
+### Management Interface
+- 📋 **Torrent Management** - View, filter, and manage problem torrents
+- 🏷️ **Smart Filtering** - Filter by Broken, Under Repair, or Mismatch status
+- 🎯 **Bulk Operations** - Repair or delete multiple torrents at once
+- 🔢 **Pagination** - Handle large torrent lists efficiently
 
 ---
 
-## 📊 What's New in v2.4.0
+## 📊 What's New in v2.5.2
 
-**Unified Torrent Management Center** - The flagship feature of this release:
+**Health Verification System:**
+
+Press `V` anytime during monitoring to scan your entire library for torrents with mismatched status. The verification feature provides:
+
+- 🔍 **Comprehensive Scanning** - Checks all "OK" torrents for actual state mismatches
+- 📊 **Live Progress** - Real-time progress bar with ETA and memory usage
+- ⚡ **Fast & Efficient** - Optimized for libraries with 5000+ torrents
+- 💾 **Persistent Settings** - AutoRepair and AutoVerify preferences saved automatically
+
+**Wait Screen with Health Verify:**
 
 ```
 ======================================================================
-  TORRENT MANAGEMENT CENTER v2.4.0
+  WAITING FOR NEXT CHECK                              Mem: 45.23 MB
+  Press: [M] Management  [S] Stats  [V] Health Verify  [Ctrl+C] Exit
 ======================================================================
 
-Total: 25 torrents  |  Broken: 3  |  Under Repair: 7  |  Unrepairable: 15
-
-AutoRepair: OFF
-
-----------------------------------------------------------------------
-
-  1. [ ] [BRK] Movie.Title.2023.2160p.WEB-DL.DDP5.1.mkv
-  2. [ ] [REP] TV.Show.S01E05.1080p.HDTV.x264.mkv
-  3. [ ] [BAD] Platonic.2023.S02E10.Brett.Coyotes.Last.Stand...
-          Reason: repair failed, download status: error
+  [████████░░░░░░░░░░░░] Next check in: 22m 15s (at 18:45:30)
 ```
 
-**Hotkeys During Monitoring:**
-```
-[INFO] Next check in 30 minutes... (Press 'M' for Management, 'S' for Stats)
-```
+**Verification Progress:**
 
-Press `M` anytime to jump into management, `S` to view statistics!
+```
+  [████████████░░░░░░░░░░░░░░░░░░] 40.2% | 2335/5812 | ETA: 6m 12s | Mismatches: 3 | Mem: 52.18MB
+```
 
 ---
 
@@ -78,7 +82,7 @@ Press `M` anytime to jump into management, `S` to view statistics!
 
 ```powershell
 # Download the script
-Invoke-WebRequest -Uri "https://github.com/maddguru/zurg-broken-torrent-monitor/releases/download/v2.4.0/Zurg-Broken-Torrent-Monitor.ps1" -OutFile "Zurg-Broken-Torrent-Monitor.ps1"
+Invoke-WebRequest -Uri "https://github.com/maddguru/zurg-broken-torrent-monitor/releases/download/v2.5.2/Zurg-Broken-Torrent-Monitor.ps1" -OutFile "Zurg-Broken-Torrent-Monitor.ps1"
 
 # Test run
 .\Zurg-Broken-Torrent-Monitor.ps1 -RunOnce
@@ -147,6 +151,7 @@ Invoke-WebRequest -Uri "https://github.com/maddguru/zurg-broken-torrent-monitor/
 
 | Version | Date | Features |
 |---------|------|----------|
+| **2.5.2** | 2025-12-11 | Health verification system and persistent settings |
 | **2.4.0** | 2025-12-10 | Unified Management, filtering, bulk by reason, live AutoRepair toggle, hotkeys |
 | **2.3.0** | 2025-12-05 | Unrepairable management, bulk selection, continuous mode |
 | **2.2.1** | 2025-11-13 | Array unwrapping fix |
